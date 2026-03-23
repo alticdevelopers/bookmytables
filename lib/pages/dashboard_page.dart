@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 import '../core/app_state.dart';
+import '../core/notifications.dart';
 import '../core/theme.dart';
 import 'menu_offers_page.dart';
 import 'tables_page.dart';
@@ -19,8 +21,45 @@ class _DashboardPageState extends State<DashboardPage> {
   int _reqPage = 0;
   int _reqCount = 0; // for dots
 
+  StreamSubscription<List<ReservationRequest>>? _reqSub;
+  final Set<String> _knownIds = {};
+  bool _firstLoad = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _startBookingListener();
+  }
+
+  void _startBookingListener() {
+    final slug = AppState.instance.activeSlug;
+    _reqSub = AppState.instance.watchRequests(slug).listen((requests) {
+      if (_firstLoad) {
+        // Populate known IDs on first snapshot — don't notify for existing bookings
+        for (final r in requests) {
+          _knownIds.add(r.id);
+        }
+        _firstLoad = false;
+        return;
+      }
+      // Notify for any brand-new request IDs
+      for (final r in requests) {
+        if (!_knownIds.contains(r.id)) {
+          _knownIds.add(r.id);
+          final dtStr = DateFormat('MMM d • h:mm a').format(r.datetime);
+          showBookingNotification(
+            customerName: r.customerName,
+            guests: r.guests,
+            datetime: dtStr,
+          );
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _reqSub?.cancel();
     _reqPageController.dispose();
     super.dispose();
   }
@@ -351,7 +390,7 @@ class _DashboardPageState extends State<DashboardPage> {
           StreamBuilder<List<Reservation>>(
             stream: app.watchReservations(slug),
             builder: (context, snap) {
-              final list = (snap.data ?? const <Reservation>[])
+              final list = List<Reservation>.from(snap.data ?? [])
                 ..sort((a, b) => a.datetime.compareTo(b.datetime));
               final futureOnly = list.where((r) => r.datetime.isAfter(DateTime.now())).toList();
 
@@ -593,16 +632,20 @@ class _RequestCard extends StatelessWidget {
                   icon: const Icon(Icons.call, size: 20),
                 ),
                 const Spacer(),
-                TextButton.icon(
-                  onPressed: onDecline,
-                  icon: const Icon(Icons.close, size: 18),
-                  label: const Text("Decline"),
+                Flexible(
+                  child: TextButton.icon(
+                    onPressed: onDecline,
+                    icon: const Icon(Icons.close, size: 18),
+                    label: const Text("Decline", overflow: TextOverflow.ellipsis),
+                  ),
                 ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: onAccept,
-                  icon: const Icon(Icons.check, size: 18),
-                  label: const Text("Accept"),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: FilledButton.icon(
+                    onPressed: onAccept,
+                    icon: const Icon(Icons.check, size: 18),
+                    label: const Text("Accept", overflow: TextOverflow.ellipsis),
+                  ),
                 ),
               ],
             ),

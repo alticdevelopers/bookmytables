@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/app_state.dart';
+import '../core/notifications.dart';
 import '../core/theme.dart';
 import 'dashboard_page.dart';
 
@@ -78,6 +79,9 @@ class _SetupWizardPageState extends State<SetupWizardPage> {
             .doc(uid)
             .set({"slug": slug}, SetOptions(merge: true));
       }
+
+      // Save FCM token now that setup is complete
+      await saveFcmToken();
 
       if (!mounted) return;
       Navigator.pushReplacement(

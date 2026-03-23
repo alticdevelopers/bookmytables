@@ -1,15 +1,14 @@
 // ======================= BOOK MY TABLES =======================
-// Main entry file: initializes Firebase, FCM, RevenueCat, and app routes.
-// ==============================================================
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/foundation.dart' show kIsWeb; // Web check
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'core/theme.dart';
 import 'core/app_state.dart';
 import 'firebase_options.dart';
@@ -23,60 +22,80 @@ import 'pages/menu_offers_page.dart';
 import 'pages/tables_page.dart';
 import 'pages/public_booking_page.dart';
 
-// ==================== PUSH NOTIFICATIONS (Background) =====================
+// ==================== PUSH NOTIFICATIONS =====================
 Future<void> fcmBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (_) {} // Already initialized — safe to ignore
   debugPrint("🔔 Background FCM message: ${message.messageId}");
 }
+
 
 // ==================== GLOBAL NAVIGATOR =====================
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-// ==================== URL SLUG HELPER (PUBLIC) ============================
+// ==================== URL SLUG =============================
 String? _extractPublicSlugFromUrl() {
   final uri = Uri.base;
 
-  // Support /slug and #/slug (hash routing)
   List<String> segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+
   if (segs.isEmpty && uri.fragment.isNotEmpty) {
-    final frag = uri.fragment.startsWith('/') ? uri.fragment : '/${uri.fragment}';
+    final frag = uri.fragment.startsWith('/')
+        ? uri.fragment
+        : '/${uri.fragment}';
     segs = Uri.parse(frag).pathSegments.where((s) => s.isNotEmpty).toList();
   }
+
   if (segs.isEmpty) return null;
 
   const reserved = {
-    'login', 'setup', 'dashboard', 'menu', 'tables', 'public', 'assets'
+    'login',
+    'setup',
+    'dashboard',
+    'menu',
+    'tables',
+    'public',
+    'assets'
   };
+
   final first = segs.first.toLowerCase();
   if (reserved.contains(first)) return null;
 
-  return segs.first; // treat the first segment as the restaurant slug
+  return segs.first;
 }
 
-// ==================== APP ENTRY ==============================
+// ==================== MAIN ==============================
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1️⃣ Initialize Firebase
-  final app = await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-
-  // ✅ Web: ensure auth persistence so sign-in doesn’t break on refresh
-  if (kIsWeb) {
-    await FirebaseAuth.instanceFor(app: app)
-        .setPersistence(Persistence.LOCAL); // or Persistence.SESSION
+  // ✅ FIXED Firebase init — try/catch handles native-layer duplicate on Android
+  FirebaseApp app;
+  try {
+    app = await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    app = Firebase.app(); // Already initialized by native SDK — reuse it
   }
 
-  // 2️⃣ Set background message handler
+  // Web persistence
+  if (kIsWeb) {
+    await FirebaseAuth.instanceFor(app: app)
+        .setPersistence(Persistence.LOCAL);
+  }
+
+  // Background messages
   FirebaseMessaging.onBackgroundMessage(fcmBackgroundHandler);
 
-  // 3️⃣ Initialize RevenueCat (for subscriptions) — replace with your real key
+  // RevenueCat
   await Purchases.configure(
     PurchasesConfiguration("public_sdk_key_here"),
   );
 
-  // 4️⃣ Initialize FCM + local notifications
+  // Notifications
   await initNotifications(
     onNavigate: (deepLink) {
       if (deepLink != null && deepLink.isNotEmpty) {
@@ -87,19 +106,16 @@ Future<void> main() async {
     },
   );
 
-  // 5️⃣ (Optional) Print device token for testing
-  try {
-    final token = await FirebaseMessaging.instance.getToken();
-    debugPrint("🔥 FCM Token: $token");
-  } catch (e) {
-    debugPrint("⚠️ Failed to fetch FCM token: $e");
-  }
+  // Save FCM token to Firestore so Cloud Function can send notifications
+  await saveFcmToken();
 
-  // 6️⃣ Run app
+  // Refresh token whenever FCM issues a new one
+  FirebaseMessaging.instance.onTokenRefresh.listen((_) => saveFcmToken());
+
   runApp(const BookMyTablesApp());
 }
 
-// ==================== APP ROOT ===============================
+// ==================== APP ===============================
 class BookMyTablesApp extends StatelessWidget {
   const BookMyTablesApp({super.key});
 
@@ -129,9 +145,10 @@ class BookMyTablesApp extends StatelessWidget {
   }
 }
 
-// ==================== BOOTSTRAPPER (robust, slug-first) ===================
+// ==================== BOOTSTRAPPER =======================
 class Bootstrapper extends StatefulWidget {
   const Bootstrapper({super.key});
+
   @override
   State<Bootstrapper> createState() => _BootstrapperState();
 }
@@ -148,14 +165,12 @@ class _BootstrapperState extends State<Bootstrapper> {
 
   Future<void> _start() async {
     try {
-      // 0) PUBLIC SLUG? → go straight to PublicBookingPage
       final pathSlug = _extractPublicSlugFromUrl();
       if (pathSlug != null) {
         _go(PublicBookingPage(slug: pathSlug));
         return;
       }
 
-      // 1) Auth state (nullable + timeout handled via catch)
       User? user;
       try {
         user = await FirebaseAuth.instance
@@ -163,7 +178,7 @@ class _BootstrapperState extends State<Bootstrapper> {
             .first
             .timeout(const Duration(seconds: 3));
       } on TimeoutException {
-        user = FirebaseAuth.instance.currentUser; // fallback
+        user = FirebaseAuth.instance.currentUser;
       }
 
       if (!mounted || _navigated) return;
@@ -173,7 +188,6 @@ class _BootstrapperState extends State<Bootstrapper> {
         return;
       }
 
-      // 2) user -> slug (nullable + timeout handled via catch)
       DocumentSnapshot<Map<String, dynamic>>? snap;
       try {
         snap = await FirebaseFirestore.instance
@@ -186,6 +200,7 @@ class _BootstrapperState extends State<Bootstrapper> {
       }
 
       final slug = snap?.data()?["slug"] as String?;
+
       if (!mounted || _navigated) return;
 
       if (slug == null || slug.isEmpty) {
@@ -193,12 +208,13 @@ class _BootstrapperState extends State<Bootstrapper> {
         return;
       }
 
-      // 3) Load profile (non-blocking best-effort)
       AppState.instance.profileSlugOverride = slug;
+
       try {
         final p = await AppState.instance
             .loadProfileBySlug(slug)
             .timeout(const Duration(seconds: 3));
+
         if (p != null) {
           AppState.instance.profile
             ..businessName = p.businessName
@@ -210,16 +226,14 @@ class _BootstrapperState extends State<Bootstrapper> {
             ..restaurantType = p.restaurantType
             ..about = p.about;
         }
-      } on TimeoutException {
-        // ignore, proceed to dashboard
       } catch (e) {
-        debugPrint("Profile load error: $e");
+        debugPrint("Profile error: $e");
       }
 
       if (!mounted || _navigated) return;
+
       _go(const DashboardPage());
-    } catch (e, st) {
-      debugPrint("Bootstrap fatal: $e\n$st");
+    } catch (e) {
       if (!mounted) return;
       setState(() => _fatal = e.toString());
     }
@@ -238,35 +252,14 @@ class _BootstrapperState extends State<Bootstrapper> {
     if (_fatal != null) {
       return Scaffold(
         body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text("Something went wrong",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                SelectableText(_fatal!, textAlign: TextAlign.center),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: () => _go(const LoginPage()),
-                  child: const Text("Go to Login"),
-                ),
-              ],
-            ),
-          ),
+          child: Text(_fatal!),
         ),
       );
     }
 
-    // Visible loader (not a tiny dot)
     return const Scaffold(
       body: Center(
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: CircularProgressIndicator(strokeWidth: 4),
-        ),
+        child: CircularProgressIndicator(),
       ),
     );
   }

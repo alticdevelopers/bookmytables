@@ -1,18 +1,21 @@
-import * as functions from "firebase-functions";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 
 admin.initializeApp();
 
 // Trigger when a new booking request is created
-export const notifyNewBooking = functions.firestore
-  .document("businesses/{slug}/requests/{requestId}")
-  .onCreate(async (snap, context) => {
+export const notifyNewBooking = onDocumentCreated(
+  "businesses/{slug}/requests/{requestId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return null;
+
     const data = snap.data();
-    const slug = context.params.slug;
-    const customer = data.customerName || "Someone";
-    const guests = data.guests || 2;
-    const datetime = data.datetime?.toDate
-      ? data.datetime.toDate().toLocaleString()
+    const slug = event.params.slug;
+    const customer = data["customerName"] || "Someone";
+    const guests = data["guests"] || 2;
+    const datetime = data["datetime"]?.toDate
+      ? data["datetime"].toDate().toLocaleString()
       : "soon";
 
     // Get restaurant owner info
@@ -20,7 +23,7 @@ export const notifyNewBooking = functions.firestore
     const bizSnap = await bizRef.get();
     if (!bizSnap.exists) return null;
 
-    const ownerEmail = bizSnap.data()?.ownerEmail;
+    const ownerEmail = bizSnap.data()?.["ownerEmail"];
     if (!ownerEmail) {
       console.log("⚠️ No ownerEmail for", slug);
       return null;
@@ -40,7 +43,7 @@ export const notifyNewBooking = functions.firestore
     }
 
     const userDoc = userSnap.docs[0];
-    const tokens: string[] = userDoc.data().fcmTokens || [];
+    const tokens: string[] = userDoc.data()["fcmTokens"] || [];
 
     if (!tokens.length) {
       console.log("⚠️ No FCM tokens found for", ownerEmail);
@@ -60,11 +63,12 @@ export const notifyNewBooking = functions.firestore
     };
 
     try {
-      const res = await admin.messaging().sendMulticast(payload);
+      const res = await admin.messaging().sendEachForMulticast(payload);
       console.log(`✅ Sent ${res.successCount} notification(s) for ${slug}`);
       return res;
     } catch (err) {
       console.error("❌ Error sending FCM:", err);
       return null;
     }
-  });
+  }
+);
