@@ -1,0 +1,83 @@
+{
+  "hosting": [
+    {
+      "site": "app-bookmytables",
+      "public": "build/web",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        { "source": "**", "destination": "/index.html" }
+      ]
+    },
+    {
+      "site": "go-bookmytables",
+      "public": "build/web",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        { "source": "**", "destination": "/index.html" }
+      ]
+    }
+  ],
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "book-my-tables",
+          "appId": "1:394858722821:android:99e8dc90cb744102198e6c",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "book-my-tables",
+          "appId": "1:394858722821:ios:8167d60416418953198e6c",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "book-my-tables",
+          "appId": "1:394858722821:ios:8167d60416418953198e6c",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "book-my-tables",
+          "configurations": {
+            "android": "1:394858722821:android:99e8dc90cb744102198e6c",
+            "ios": "1:394858722821:ios:8167d60416418953198e6c",
+            "macos": "1:394858722821:ios:8167d60416418953198e6c",
+            "web": "1:394858722821:web:2fe4ee24be0a8e43198e6c",
+            "windows": "1:394858722821:web:74f5d8d456340420198e6c"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" run build"
+      ]
+    }
+  ]
+}

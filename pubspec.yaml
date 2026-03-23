@@ -1,0 +1,46 @@
+name: bookmytables
+description: Book My Tables – restaurant table booking and management app.
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- Firebase Core Services ---
+  firebase_core: ^4.2.0
+  firebase_auth: ^6.1.1
+  cloud_firestore: ^6.0.3
+  firebase_messaging: ^16.0.3
+
+  # --- UI / Theming ---
+  google_fonts: ^6.2.1
+  intl: ^0.20.2
+  url_launcher: ^6.3.0
+  flutter_local_notifications: ^19.5.0
+
+  # --- Authentication / Identity ---
+  google_sign_in: ^7.2.0
+  sign_in_with_apple: ^7.0.1
+
+  # --- Purchases (RevenueCat) ---
+  purchases_flutter: ^9.9.1
+
+  # --- Utilities ---
+  package_info_plus: ^9.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
+

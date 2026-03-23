@@ -1,0 +1,18 @@
+{
+  "projects": {
+    "default": "book-my-tables"
+  },
+  "targets": {
+    "book-my-tables": {
+      "hosting": {
+        "app": [
+          "app-bookmytables"
+        ],
+        "go": [
+          "go-bookmytables"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

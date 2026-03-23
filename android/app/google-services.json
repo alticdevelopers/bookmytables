@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "394858722821",
+    "project_id": "book-my-tables",
+    "storage_bucket": "book-my-tables.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:394858722821:android:99e8dc90cb744102198e6c",
+        "android_client_info": {
+          "package_name": "com.bookmytables.bookmytables"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "394858722821-h34597lkbhb3d1864ur71fhdpo91hmmd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bookmytables.bookmytables",
+            "certificate_hash": "18953d24c5c724125c69e5132ba9bea178b5a210"
+          }
+        },
+        {
+          "client_id": "394858722821-tpqkn9paa1q809bnt7g19f5r4uch7dp8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBnmtXiln1ljS_8knOWXt3hTksdWFPfimc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "394858722821-tpqkn9paa1q809bnt7g19f5r4uch7dp8.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "394858722821-kskd33cd12j0727hn3bsdnaodfbqnu5q.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.bookmytables.bookmytables"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
