@@ -8,13 +8,10 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-
 import 'core/theme.dart';
 import 'core/app_state.dart';
 import 'firebase_options.dart';
 import 'core/notifications.dart';
-
-// Pages
 import 'pages/login_page.dart';
 import 'pages/setup_wizard_page.dart';
 import 'pages/dashboard_page.dart';
@@ -23,14 +20,7 @@ import 'pages/tables_page.dart';
 import 'pages/public_booking_page.dart';
 
 // ==================== PUSH NOTIFICATIONS =====================
-Future<void> fcmBackgroundHandler(RemoteMessage message) async {
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  } catch (_) {} // Already initialized — safe to ignore
-  debugPrint("🔔 Background FCM message: ${message.messageId}");
-}
+// fcmBackgroundHandler is defined in core/notifications.dart
 
 
 // ==================== GLOBAL NAVIGATOR =====================
@@ -87,30 +77,32 @@ Future<void> main() async {
         .setPersistence(Persistence.LOCAL);
   }
 
-  // Background messages
-  FirebaseMessaging.onBackgroundMessage(fcmBackgroundHandler);
+  if (!kIsWeb) {
+    // Background messages (mobile only)
+    FirebaseMessaging.onBackgroundMessage(fcmBackgroundHandler);
 
-  // RevenueCat
-  await Purchases.configure(
-    PurchasesConfiguration("public_sdk_key_here"),
-  );
+    // RevenueCat (mobile only)
+    await Purchases.configure(
+      PurchasesConfiguration("public_sdk_key_here"),
+    );
 
-  // Notifications
-  await initNotifications(
-    onNavigate: (deepLink) {
-      if (deepLink != null && deepLink.isNotEmpty) {
-        navigatorKey.currentState?.pushNamed(deepLink);
-      } else {
-        navigatorKey.currentState?.pushNamed("/dashboard");
-      }
-    },
-  );
+    // Notifications (mobile only)
+    await initNotifications(
+      onNavigate: (deepLink) {
+        if (deepLink != null && deepLink.isNotEmpty) {
+          navigatorKey.currentState?.pushNamed(deepLink);
+        } else {
+          navigatorKey.currentState?.pushNamed("/dashboard");
+        }
+      },
+    );
 
-  // Save FCM token to Firestore so Cloud Function can send notifications
-  await saveFcmToken();
+    // Save FCM token to Firestore so Cloud Function can send notifications
+    await saveFcmToken();
 
-  // Refresh token whenever FCM issues a new one
-  FirebaseMessaging.instance.onTokenRefresh.listen((_) => saveFcmToken());
+    // Refresh token whenever FCM issues a new one
+    FirebaseMessaging.instance.onTokenRefresh.listen((_) => saveFcmToken());
+  }
 
   runApp(const BookMyTablesApp());
 }

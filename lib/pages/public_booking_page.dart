@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../core/theme.dart';
 
 class PublicBookingPage extends StatefulWidget {
@@ -23,28 +25,149 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
   bool _loading = false;
   String? _error;
 
-  // Business profile loaded by slug for header
   Map<String, dynamic>? _biz;
+
+  // ── Timezone / holidays / vacations / business hours ──
+  String _timezone = 'UTC';
+  // Each holiday: { 'date': 'yyyy-MM-dd', 'reason': '...' }
+  List<Map<String, String>> _holidays = [];
+  Map<String, bool> _dayOpen = {};  // 'monday' → true/false
+
+  // UTC offset in minutes for the business timezone (no DST — best-effort)
+  static const Map<String, int> _tzOffsetMinutes = {
+    'America/New_York':   -300,
+    'America/Chicago':    -360,
+    'America/Denver':     -420,
+    'America/Los_Angeles':-480,
+    'America/Anchorage':  -540,
+    'Pacific/Honolulu':   -600,
+    'Europe/London':         0,
+    'Europe/Paris':         60,
+    'Europe/Berlin':        60,
+    'Asia/Dubai':          240,
+    'Asia/Kolkata':        330,  // +5:30
+    'Asia/Singapore':      480,
+    'Asia/Shanghai':       480,
+    'Asia/Tokyo':          540,
+    'Australia/Sydney':    600,
+    'Pacific/Auckland':    720,
+    'UTC':                   0,
+  };
+
+  static const List<String> _dayKeys = [
+    'monday','tuesday','wednesday','thursday','friday','saturday','sunday'
+  ];
+
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _bizSub;
 
   @override
   void initState() {
     super.initState();
-    _loadBiz();
+    // Start listening immediately — don't wait for auth
+    _bizSub = FirebaseFirestore.instance
+        .collection("businesses")
+        .doc(widget.slug)
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists || !mounted) return;
+      _parseBizData(snap.data()!);
+    }, onError: (e) => debugPrint("Biz stream error: $e"));
+
+    // Auth in background — Firestore will re-emit once signed in
+    _ensureAuth();
   }
 
-  Future<void> _loadBiz() async {
+  Future<void> _ensureAuth() async {
     try {
-      final snap = await FirebaseFirestore.instance
-          .collection("businesses")
-          .doc(widget.slug)
-          .get();
-      if (mounted) setState(() => _biz = snap.data());
+      if (FirebaseAuth.instance.currentUser == null) {
+        await FirebaseAuth.instance.signInAnonymously();
+      }
     } catch (e) {
-      debugPrint("Failed to load business header: $e");
+      debugPrint("Anon sign-in failed: $e");
     }
   }
 
-  // ---- Safe getters (avoid Object? → String? errors) ----
+  @override
+  void dispose() {
+    _bizSub?.cancel();
+    super.dispose();
+  }
+
+  void _parseBizData(Map<String, dynamic> data) {
+    // Parse timezone
+    String newTimezone = 'UTC';
+    final tz = data['timezone'];
+    if (tz is String && _tzOffsetMinutes.containsKey(tz)) newTimezone = tz;
+
+    // Parse holidays — supports old (string) and new ({date, reason}) formats
+    List<Map<String, String>> newHolidays = [];
+    if (data['holidays'] is List) {
+      newHolidays = (data['holidays'] as List)
+          .map<Map<String, String>>((h) {
+            if (h is String) return {'date': h, 'reason': ''};
+            return {
+              'date':   (h['date']   ?? '').toString(),
+              'reason': (h['reason'] ?? '').toString(),
+            };
+          })
+          .toList();
+    }
+
+    // Parse business hours
+    final Map<String, bool> newDayOpen = {};
+    if (data['businessHours'] is Map) {
+      final hours = data['businessHours'] as Map<String, dynamic>;
+      for (final day in _dayKeys) {
+        final d = hours[day];
+        newDayOpen[day] = (d is Map) ? (d['isOpen'] == true) : true;
+      }
+    }
+
+    setState(() {
+      _biz      = data;
+      _timezone = newTimezone;
+      _holidays = newHolidays;
+      _dayOpen  = newDayOpen;
+    });
+  }
+
+  // ── Date selectable predicate ──
+  bool _isDateSelectable(DateTime day) {
+    final dateStr = DateFormat('yyyy-MM-dd').format(day);
+    if (_holidays.any((h) => h['date'] == dateStr)) return false;
+    if (_dayOpen.isNotEmpty) {
+      final key = _dayKeys[day.weekday - 1];
+      if (_dayOpen[key] == false) return false;
+    }
+    return true;
+  }
+
+  // ── Why is this date blocked? Returns reason string or "Closed" or null ──
+  String? _whyBlocked(DateTime day) {
+    final dateStr = DateFormat('yyyy-MM-dd').format(day);
+    final holiday = _holidays.where((h) => h['date'] == dateStr).firstOrNull;
+    if (holiday != null) {
+      final reason = holiday['reason'] ?? '';
+      return reason.isNotEmpty ? reason : "Holiday";
+    }
+    if (_dayOpen.isNotEmpty) {
+      final key = _dayKeys[day.weekday - 1];
+      if (_dayOpen[key] == false) return "Closed";
+    }
+    return null;
+  }
+
+  // ── Convert picked local business-timezone datetime → UTC for Firestore ──
+  DateTime _toUtc(DateTime localDate, TimeOfDay localTime) {
+    final offsetMinutes = _tzOffsetMinutes[_timezone] ?? 0;
+    final localDt = DateTime(
+      localDate.year, localDate.month, localDate.day,
+      localTime.hour, localTime.minute,
+    );
+    return localDt.subtract(Duration(minutes: offsetMinutes));
+  }
+
+  // ── Safe getters ──
   String _s(Map<String, dynamic> m, String k, {String fallback = ""}) {
     final v = m[k];
     if (v is String) return v;
@@ -67,10 +190,7 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     return fallback;
   }
 
-  bool get _isSubmitting => _loading;
-
   Future<void> _bookTable() async {
-    // basic validation
     final nm = name.text.trim();
     final ph = phone.text.trim();
     if (nm.isEmpty || ph.isEmpty) {
@@ -78,16 +198,14 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
       return;
     }
 
-    // prevent past times when booking same day
-    final now = DateTime.now();
-    final when = DateTime(
-      selectedDate.year,
-      selectedDate.month,
-      selectedDate.day,
-      selectedTime.hour,
-      selectedTime.minute,
-    );
-    if (!when.isAfter(now.subtract(const Duration(minutes: 1)))) {
+    if (!_isDateSelectable(selectedDate)) {
+      setState(() => _error = "This date is unavailable. Please choose another.");
+      return;
+    }
+
+    // Build UTC datetime using business timezone
+    final utcWhen = _toUtc(selectedDate, selectedTime);
+    if (!utcWhen.isAfter(DateTime.now().toUtc().subtract(const Duration(minutes: 1)))) {
       setState(() => _error = "Please choose a future time.");
       return;
     }
@@ -100,39 +218,32 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
 
     try {
       final id = "r${DateTime.now().microsecondsSinceEpoch}";
-      final data = {
-        "id": id,
-        "customerName": nm,
-        "guests": int.tryParse(guests.text.trim()) ?? 2,
-        "datetime": Timestamp.fromDate(when),
-        "phone": ph,
-        "notes": notes.text.trim(),
-        "status": "pending",
-        "createdAt": FieldValue.serverTimestamp(),
-      };
-
       await FirebaseFirestore.instance
           .collection("businesses")
           .doc(widget.slug)
           .collection("requests")
           .doc(id)
-          .set(data);
+          .set({
+        "id": id,
+        "customerName": nm,
+        "guests": int.tryParse(guests.text.trim()) ?? 2,
+        "datetime": Timestamp.fromDate(utcWhen),
+        "phone": ph,
+        "notes": notes.text.trim(),
+        "status": "pending",
+        "timezone": _timezone,
+        "createdAt": FieldValue.serverTimestamp(),
+      });
 
       if (!mounted) return;
-      // clear form + success UI
-      name.clear();
-      phone.clear();
-      notes.clear();
-      guests.text = "2";
+      name.clear(); phone.clear(); notes.clear(); guests.text = "2";
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Request sent! The restaurant will confirm soon.")),
       );
       _showSuccessDialog();
     } on FirebaseException catch (e) {
       debugPrint("Firestore error: ${e.code} ${e.message}");
-      if (mounted) {
-        setState(() => _error = "Couldn’t send request. Please try again.");
-      }
+      if (mounted) setState(() => _error = "Couldn't send request. Please try again.");
     } catch (e) {
       debugPrint("Booking error: $e");
       if (mounted) setState(() => _error = "Failed to book table.");
@@ -148,7 +259,7 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         title: const Text("Booking Sent"),
         content: const Text(
           "Your booking request has been sent to the restaurant. "
-              "They will confirm shortly. Thank you!",
+          "They will confirm shortly. Thank you!",
         ),
         actions: [
           TextButton(
@@ -160,9 +271,16 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     );
   }
 
+  Map<String, String>? _holidayForDate(DateTime date) {
+    final dateStr = DateFormat('yyyy-MM-dd').format(date);
+    return _holidays.where((h) => h['date'] == dateStr).firstOrNull;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final formattedDate = DateFormat('yyyy-MM-dd').format(selectedDate);
+    final formattedDate = DateFormat('EEE, MMM d yyyy').format(selectedDate);
+    final selectedHoliday = _holidayForDate(selectedDate);
+    final isSelectedDateHoliday = selectedHoliday != null;
 
     return Scaffold(
       backgroundColor: AppColors.cream,
@@ -170,126 +288,549 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         title: Text(_s(_biz ?? {}, "businessName", fallback: "Book a Table")),
         backgroundColor: AppColors.deepRed,
       ),
-      body: _loading
-          ? const Center(child: SizedBox(width: 44, height: 44, child: CircularProgressIndicator(strokeWidth: 4)))
+      body: (_biz == null || _loading)
+          ? const Center(
+              child: SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: CircularProgressIndicator(strokeWidth: 4)))
           : SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _restaurantHeader(),
-            const SizedBox(height: 20),
-            Text("Booking Details", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 10),
-            _inputField(name, "Your Name", Icons.person),
-            _inputField(phone, "Phone", Icons.phone, keyboard: TextInputType.phone),
-            _inputField(guests, "Number of Guests", Icons.group, keyboard: TextInputType.number),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text("Date"),
-                    subtitle: Text(formattedDate),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.calendar_today),
-                      onPressed: () async {
-                        final picked = await showDatePicker(
-                          context: context,
-                          initialDate: selectedDate.isBefore(DateTime.now())
-                              ? DateTime.now()
-                              : selectedDate,
-                          firstDate: DateTime.now(),
-                          lastDate: DateTime.now().add(const Duration(days: 60)),
-                        );
-                        if (picked != null) {
-                          setState(() => selectedDate = picked);
-                        }
-                      },
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _restaurantHeader(),
+                  const SizedBox(height: 16),
+
+                  // ── Selected date is a holiday: hide menu/offers/specials ──
+                  if (isSelectedDateHoliday) ...[
+                    _buildHolidayClosedNotice(selectedHoliday!),
+                    const SizedBox(height: 20),
+                    Text("Choose Another Date",
+                        style: Theme.of(context).textTheme.titleLarge),
+                    const SizedBox(height: 10),
+                  ] else ...[
+                    _buildTodayHolidayBanner(),
+                    _buildAvailabilityNotice(),
+                    _buildPublicInfoSections(widget.slug),
+                    const SizedBox(height: 16),
+                    Text("Booking Details",
+                        style: Theme.of(context).textTheme.titleLarge),
+                    const SizedBox(height: 10),
+                  ],
+                  _inputField(name, "Your Name", Icons.person),
+                  _inputField(phone, "Phone", Icons.phone,
+                      keyboard: TextInputType.phone),
+                  _inputField(guests, "Number of Guests", Icons.group,
+                      keyboard: TextInputType.number),
+                  const SizedBox(height: 10),
+
+                  // ── Date & Time row ──
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text("Date"),
+                          subtitle: Text(formattedDate),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.calendar_today),
+                            onPressed: () async {
+                              // Advance selectedDate if currently blocked
+                              DateTime initial = selectedDate;
+                              if (!_isDateSelectable(initial)) {
+                                initial = DateTime.now();
+                              }
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate: initial.isBefore(DateTime.now())
+                                    ? DateTime.now()
+                                    : initial,
+                                firstDate: DateTime.now(),
+                                lastDate: DateTime.now()
+                                    .add(const Duration(days: 60)),
+                                selectableDayPredicate: _isDateSelectable,
+                              );
+                              if (picked != null) {
+                                setState(() => selectedDate = picked);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text("Time"),
+                          subtitle: Text(selectedTime.format(context)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.access_time),
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: selectedTime,
+                              );
+                              if (picked != null) {
+                                setState(() => selectedTime = picked);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // ── Selected date blocked label ──
+                  if (_whyBlocked(selectedDate) != null)
+                    Builder(builder: (context) {
+                      final reason = _whyBlocked(selectedDate)!;
+                      final isClosed = reason == "Closed";
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isClosed ? Icons.block : Icons.event_busy,
+                              size: 14,
+                              color: Colors.red.shade600,
+                            ),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                isClosed
+                                    ? "We are Closed on this day — please choose another"
+                                    : "$reason — please choose another date",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.red.shade600,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+
+                  // ── Timezone notice ──
+                  if (_timezone != 'UTC')
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.schedule,
+                              size: 14, color: Colors.black45),
+                          const SizedBox(width: 4),
+                          Text(
+                            "Times are in ${_timezone.replaceAll('_', ' ')}",
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black45),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: notes,
+                    minLines: 3,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: "Special Requests / Notes",
+                      alignLabelWithHint: true,
                     ),
                   ),
-                ),
-                Expanded(
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text("Time"),
-                    subtitle: Text(selectedTime.format(context)),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.access_time),
-                      onPressed: () async {
-                        final picked = await showTimePicker(
-                          context: context,
-                          initialTime: selectedTime,
-                        );
-                        if (picked != null) {
-                          setState(() => selectedTime = picked);
-                        }
-                      },
+                  const SizedBox(height: 20),
+                  if (_error != null)
+                    Text(_error!,
+                        style: const TextStyle(
+                            color: Colors.red, fontSize: 14)),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _loading ? null : _bookTable,
+                      icon: const Icon(Icons.check),
+                      label: const Text("Submit Booking"),
                     ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: notes,
-              minLines: 3,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: "Special Requests / Notes",
-                alignLabelWithHint: true,
+                  const SizedBox(height: 20),
+                  Text("Available Tables",
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 8),
+                  _tablesStreamList(),
+                ],
               ),
             ),
-            const SizedBox(height: 20),
-            if (_error != null)
-              Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 14)),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: _isSubmitting ? null : _bookTable,
-              icon: const Icon(Icons.check),
-              label: const Text("Submit Booking"),
-            ),
-            const SizedBox(height: 20),
-            Text("Available Tables", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            _tablesStreamList(),
-          ],
-        ),
-      ),
     );
   }
 
-  // ========== Restaurant Header ==========
   Widget _restaurantHeader() {
     final m = _biz ?? const <String, dynamic>{};
+    final logoUrl = _s(m, 'logoUrl');
     return Card(
       elevation: 2,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_s(m, "businessName", fallback: "Restaurant"),
-                style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text(
-              "${_s(m, 'city')} ${_s(m, 'state')} ${_s(m, 'country')}".trim(),
-              style: const TextStyle(color: Colors.black54),
+            // Logo
+            CircleAvatar(
+              radius: 36,
+              backgroundColor: const Color(0xFFFFF0EE),
+              backgroundImage:
+                  logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+              child: logoUrl.isEmpty
+                  ? const Icon(Icons.store, size: 36, color: AppColors.deepRed)
+                  : null,
             ),
-            if (_s(m, "restaurantType").isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text("Cuisine: ${_s(m, 'restaurantType')}",
-                    style: const TextStyle(color: Colors.black87)),
+            const SizedBox(width: 14),
+            // Info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_s(m, "businessName", fallback: "Restaurant"),
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 4),
+                  Text(
+                    [_s(m, 'city'), _s(m, 'state'), _s(m, 'country')]
+                        .where((e) => e.isNotEmpty)
+                        .join(", "),
+                    style: const TextStyle(color: Colors.black54),
+                  ),
+                  if (_s(m, "restaurantType").isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text("Cuisine: ${_s(m, 'restaurantType')}",
+                          style: const TextStyle(color: Colors.black87)),
+                    ),
+                  if (_s(m, "about").isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(_s(m, "about"),
+                          style: const TextStyle(
+                              color: Colors.black54, fontSize: 13)),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // ========== Available Tables (live) ==========
+  // ═══════════════ PUBLIC INFO SECTIONS ═══════════════
+  Widget _buildPublicInfoSections(String slug) {
+    final menuStream = FirebaseFirestore.instance
+        .collection('businesses').doc(slug).collection('menu')
+        .where('available', isEqualTo: true)
+        .snapshots();
+    final offersStream = FirebaseFirestore.instance
+        .collection('businesses').doc(slug).collection('offers')
+        .where('active', isEqualTo: true)
+        .snapshots();
+
+    return Column(
+      children: [
+        // ── Holidays ──
+        _buildHolidaysSection(),
+
+        // ── Menu ──
+        _infoExpansionTile(
+          icon: Icons.restaurant_menu,
+          title: 'Menu',
+          stream: menuStream,
+          builder: (docs) {
+            if (docs.isEmpty) return _publicEmptyText('No items available');
+            return Column(
+              children: docs.map((d) {
+                final data     = d.data();
+                final name     = _s(data, 'name');
+                final price    = _s(data, 'price') != ''
+                    ? (data['price'] as num?)?.toStringAsFixed(2) ?? '0.00'
+                    : '0.00';
+                final category = _s(data, 'category');
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.circle,
+                      size: 8, color: AppColors.deepRed),
+                  title: Text(name,
+                      style: const TextStyle(fontWeight: FontWeight.w500)),
+                  subtitle: category.isNotEmpty ? Text(category) : null,
+                  trailing: Text('₹$price',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.deepRed)),
+                );
+              }).toList(),
+            );
+          },
+        ),
+
+        // ── Available Types ──
+        _infoExpansionTile(
+          icon: Icons.category,
+          title: 'Available Types',
+          stream: menuStream,
+          builder: (docs) {
+            if (docs.isEmpty) return _publicEmptyText('No categories available');
+            final Map<String, int> categories = {};
+            for (final d in docs) {
+              final cat = _s(d.data(), 'category').trim();
+              final key = cat.isEmpty ? 'Other' : cat;
+              categories[key] = (categories[key] ?? 0) + 1;
+            }
+            final keys = categories.keys.toList()..sort();
+            return Column(
+              children: keys.map((cat) => ListTile(
+                dense: true,
+                leading: const Icon(Icons.label_outline,
+                    size: 18, color: AppColors.deepRed),
+                title: Text(cat,
+                    style: const TextStyle(fontWeight: FontWeight.w500)),
+                trailing: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.deepRed.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${categories[cat]} item${categories[cat]! > 1 ? 's' : ''}',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.deepRed,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+              )).toList(),
+            );
+          },
+        ),
+
+        // ── Today's Specials ──
+        _infoExpansionTile(
+          icon: Icons.star,
+          title: "Today's Specials",
+          iconColor: AppColors.gold,
+          stream: FirebaseFirestore.instance
+              .collection('businesses').doc(slug).collection('menu')
+              .where('special', isEqualTo: true)
+              .where('available', isEqualTo: true)
+              .snapshots(),
+          builder: (docs) {
+            if (docs.isEmpty) return _publicEmptyText('No specials today');
+            return Column(
+              children: docs.map((d) {
+                final data  = d.data();
+                final name  = _s(data, 'name');
+                final price = (data['price'] as num?)?.toStringAsFixed(2) ?? '0.00';
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.star,
+                      size: 18, color: AppColors.gold),
+                  title: Text(name,
+                      style: const TextStyle(fontWeight: FontWeight.w500)),
+                  trailing: Text('₹$price',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.deepRed)),
+                );
+              }).toList(),
+            );
+          },
+        ),
+
+        // ── Offers ──
+        _infoExpansionTile(
+          icon: Icons.local_offer,
+          title: 'Offers',
+          stream: offersStream,
+          builder: (docs) {
+            if (docs.isEmpty) return _publicEmptyText('No active offers');
+            return Column(
+              children: docs.map((d) {
+                final data  = d.data();
+                final title = _s(data, 'title');
+                final desc  = _s(data, 'description');
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.local_offer,
+                      size: 18, color: AppColors.deepRed),
+                  title: Text(title,
+                      style: const TextStyle(fontWeight: FontWeight.w500)),
+                  subtitle: desc.isNotEmpty ? Text(desc) : null,
+                );
+              }).toList(),
+            );
+          },
+        ),
+
+      ],
+    );
+  }
+
+  Widget _buildHolidaysSection() {
+    final sorted = [..._holidays]
+      ..sort((a, b) => (a['date'] ?? '').compareTo(b['date'] ?? ''));
+
+    return Card(
+      key: ValueKey('holidays_${sorted.length}'),
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ExpansionTile(
+        initiallyExpanded: sorted.isNotEmpty,
+        leading: const Icon(Icons.event_busy, color: Colors.orange, size: 22),
+        title: const Text(
+          'Holidays',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '${sorted.length}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.orange,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const Icon(Icons.expand_more),
+          ],
+        ),
+        children: [
+          const Divider(height: 1),
+          if (sorted.isEmpty)
+            _publicEmptyText('No holidays listed')
+          else
+            Column(
+              children: sorted.map((h) {
+                final dateStr = h['date'] ?? '';
+                final reason  = (h['reason'] ?? '').trim();
+                String dateLabel = dateStr;
+                try {
+                  dateLabel = DateFormat('EEE, MMM d yyyy')
+                      .format(DateTime.parse(dateStr));
+                } catch (_) {}
+                final todayStr =
+                    DateFormat('yyyy-MM-dd').format(DateTime.now());
+                final isToday = dateStr == todayStr;
+                return ListTile(
+                  dense: true,
+                  leading: Icon(
+                    isToday ? Icons.celebration : Icons.event_busy,
+                    size: 18,
+                    color: Colors.orange,
+                  ),
+                  title: Text(
+                    dateLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                  subtitle: reason.isNotEmpty
+                      ? Text(reason)
+                      : isToday
+                          ? const Text('Today is a holiday')
+                          : null,
+                  trailing: isToday
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Text(
+                            'Today',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        )
+                      : null,
+                );
+              }).toList(),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoExpansionTile({
+    required IconData icon,
+    required String title,
+    required Stream<QuerySnapshot<Map<String, dynamic>>> stream,
+    required Widget Function(List<QueryDocumentSnapshot<Map<String, dynamic>>>) builder,
+    Color iconColor = AppColors.deepRed,
+  }) {
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: stream,
+        builder: (context, snap) {
+          final docs = snap.data?.docs ?? [];
+          return ExpansionTile(
+            leading: Icon(icon, color: iconColor, size: 22),
+            title: Text(title,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 15)),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (snap.connectionState == ConnectionState.waiting)
+                  const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.deepRed.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text('${docs.length}',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.deepRed,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                const Icon(Icons.expand_more),
+              ],
+            ),
+            children: [
+              const Divider(height: 1),
+              builder(docs),
+              const SizedBox(height: 8),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _publicEmptyText(String msg) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        child: Text(msg,
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+      );
+
   Widget _tablesStreamList() {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
@@ -302,7 +843,10 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         if (snap.connectionState == ConnectionState.waiting) {
           return const Padding(
             padding: EdgeInsets.symmetric(vertical: 16),
-            child: SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3)),
+            child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 3)),
           );
         }
         final docs = snap.data?.docs ?? const [];
@@ -318,7 +862,8 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
             return Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
-                leading: const Icon(Icons.table_bar, color: AppColors.deepRed),
+                leading:
+                    const Icon(Icons.table_bar, color: AppColors.deepRed),
                 title: Text(title),
                 subtitle: Text(sub),
                 trailing: Icon(
@@ -333,8 +878,8 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     );
   }
 
-  // ========== Utility Field Widget ==========
-  Widget _inputField(TextEditingController c, String label, IconData icon, {TextInputType? keyboard}) {
+  Widget _inputField(TextEditingController c, String label, IconData icon,
+      {TextInputType? keyboard}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: TextField(
@@ -343,6 +888,284 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         decoration: InputDecoration(
           labelText: label,
           prefixIcon: Icon(icon, color: AppColors.deepRed),
+        ),
+      ),
+    );
+  }
+
+  // ── Full-page holiday closed notice ──
+  Widget _buildHolidayClosedNotice(Map<String, String> holiday) {
+    final reason = (holiday['reason'] ?? '').trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orange.shade300, width: 1.5),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.celebration, color: Colors.orange, size: 48),
+          const SizedBox(height: 12),
+          const Text(
+            "Holiday",
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
+              color: Colors.orange,
+            ),
+          ),
+          if (reason.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              reason,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.orange.shade800,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Text(
+            "We are closed on this date. Please choose another date to make a booking.",
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14, color: Colors.orange.shade700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Holiday banners ──
+  Widget _buildTodayHolidayBanner() {
+    if (_holidays.isEmpty) return const SizedBox.shrink();
+
+    final now = DateTime.now();
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
+
+    final banners = <Widget>[];
+
+    // Today's holiday
+    final todayHoliday =
+        _holidays.where((h) => h['date'] == todayStr).firstOrNull;
+    if (todayHoliday != null) {
+      banners.add(_holidayBanner(
+        icon: Icons.celebration,
+        title: "Today is a holiday",
+        reason: (todayHoliday['reason'] ?? '').trim(),
+        isToday: true,
+      ));
+    }
+
+    // Upcoming holidays (next 60 days, excluding today)
+    final upcoming = _holidays.where((h) {
+      if (h['date'] == todayStr) return false;
+      try {
+        final dt = DateTime.parse(h['date']!);
+        return dt.isAfter(now) &&
+            dt.isBefore(now.add(const Duration(days: 60)));
+      } catch (_) {
+        return false;
+      }
+    }).toList()
+      ..sort((a, b) => (a['date'] ?? '').compareTo(b['date'] ?? ''));
+
+    for (final h in upcoming) {
+      String dateLabel = h['date'] ?? '';
+      try {
+        dateLabel =
+            DateFormat('EEE, MMM d').format(DateTime.parse(h['date']!));
+      } catch (_) {}
+      banners.add(_holidayBanner(
+        icon: Icons.event_busy,
+        title: "Holiday on $dateLabel",
+        reason: (h['reason'] ?? '').trim(),
+        isToday: false,
+      ));
+    }
+
+    if (banners.isEmpty) return const SizedBox.shrink();
+
+    return Column(children: banners);
+  }
+
+  Widget _holidayBanner({
+    required IconData icon,
+    required String title,
+    required String reason,
+    required bool isToday,
+  }) {
+    final color = isToday ? Colors.orange : Colors.deepOrange;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.shade300),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: color.shade800,
+                  ),
+                ),
+                if (reason.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      reason,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: color.shade700,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Availability notice card ──
+  Widget _buildAvailabilityNotice() {
+    final closedDays = <String>[];
+    for (int i = 0; i < _dayKeys.length; i++) {
+      if (_dayOpen[_dayKeys[i]] == false) {
+        // Capitalise first letter
+        final label = _dayKeys[i][0].toUpperCase() + _dayKeys[i].substring(1);
+        closedDays.add(label);
+      }
+    }
+
+    // Upcoming holidays within the next 60 days
+    final now = DateTime.now();
+    final upcomingHolidays = _holidays.where((h) {
+      try {
+        final dt = DateTime.parse(h['date']!);
+        return !dt.isBefore(DateTime(now.year, now.month, now.day)) &&
+            dt.isBefore(now.add(const Duration(days: 60)));
+      } catch (_) {
+        return false;
+      }
+    }).toList()
+      ..sort((a, b) => (a['date'] ?? '').compareTo(b['date'] ?? ''));
+
+    if (closedDays.isEmpty && upcomingHolidays.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: Colors.orange),
+              SizedBox(width: 6),
+              Text(
+                "Availability Notice",
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: Colors.orange,
+                ),
+              ),
+            ],
+          ),
+          if (closedDays.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: closedDays.map((day) => _noticeBadge(
+                label: "Closed",
+                value: day,
+                color: Colors.red.shade600,
+                bg: Colors.red.shade50,
+              )).toList(),
+            ),
+          ],
+          if (upcomingHolidays.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: upcomingHolidays.map((h) {
+                final dateLabel = DateFormat('MMM d')
+                    .format(DateTime.parse(h['date']!));
+                final reason = (h['reason'] ?? '').isNotEmpty
+                    ? h['reason']!
+                    : 'Holiday';
+                return _noticeBadge(
+                  label: reason,
+                  value: dateLabel,
+                  color: Colors.deepOrange.shade700,
+                  bg: Colors.orange.shade50,
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _noticeBadge({
+    required String label,
+    required String value,
+    required Color color,
+    required Color bg,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: RichText(
+        text: TextSpan(
+          children: [
+            TextSpan(
+              text: "$label  ",
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+            TextSpan(
+              text: value,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ],
         ),
       ),
     );
