@@ -52,6 +52,8 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
   late Map<String, Map<String, dynamic>> _businessHours;
   // Each holiday: { 'date': 'yyyy-MM-dd', 'reason': '...' }
   List<Map<String, String>> _holidays = [];
+  // Service slots: time ranges [{'start': 'HH:MM', 'end': 'HH:MM'}]
+  List<Map<String, String>> _serviceSlots = [];
 
   bool _isSaving = false;
 
@@ -124,6 +126,15 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
             'reason': (h['reason'] ?? '').toString(),
           };
         }).toList();
+      }
+
+      if (data['serviceSlots'] != null) {
+        _serviceSlots = (data['serviceSlots'] as List)
+            .map<Map<String, String>>((s) => {
+                  'start': (s['start'] ?? '').toString(),
+                  'end': (s['end'] ?? '').toString(),
+                })
+            .toList();
       }
 
       setState(() {});
@@ -205,6 +216,7 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
         'holidays': _holidays
             .map((h) => {'date': h['date'], 'reason': h['reason']})
             .toList(),
+        'serviceSlots': _serviceSlots,
       }, SetOptions(merge: true));
 
       if (!mounted) return;
@@ -489,13 +501,17 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
                   ),
                   const SizedBox(height: 14),
 
-                  // ── Business Hours ──
+                  // ── Open Days ──
                   _buildHoursCard(),
+                  const SizedBox(height: 14),
+
+                  // ── Service Hours ──
+                  _buildServiceSlotsCard(),
                   const SizedBox(height: 14),
 
                   // ── Holidays ──
                   _buildHolidaysCard(),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 14),
 
                   // ── Save ──
                   SizedBox(
@@ -646,7 +662,7 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
     );
   }
 
-  // ── Business Hours ──
+  // ── Open Days ──
   Widget _buildHoursCard() {
     return Card(
       elevation: 2,
@@ -656,26 +672,25 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Row(children: [
-              Icon(Icons.access_time, color: AppColors.deepRed, size: 20),
+              Icon(Icons.calendar_today, color: AppColors.deepRed, size: 20),
               SizedBox(width: 8),
-              Text("Business Hours",
+              Text("Open Days",
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             ]),
             const Divider(height: 20),
             ...List.generate(_dayNames.length, (i) {
-              final day   = _dayNames[i];
-              final label = _dayLabels[i];
+              final day    = _dayNames[i];
+              final label  = _dayLabels[i];
               final isOpen = _businessHours[day]!['isOpen'] as bool;
-              final open   = _businessHours[day]!['open'] as String;
-              final close  = _businessHours[day]!['close'] as String;
               return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
+                padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(
                   children: [
                     SizedBox(
-                      width: 82,
+                      width: 100,
                       child: Text(label,
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                          style: const TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w500)),
                     ),
                     Switch(
                       value: isOpen,
@@ -683,16 +698,14 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
                       onChanged: (v) =>
                           setState(() => _businessHours[day]!['isOpen'] = v),
                     ),
-                    if (isOpen) ...[
-                      _timeChip(open,  onTap: () => _pickTime(day, 'open')),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 4),
-                        child: Text("–", style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(
+                      isOpen ? 'Open' : 'Closed',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isOpen ? Colors.green.shade700 : Colors.grey,
+                        fontWeight: FontWeight.w500,
                       ),
-                      _timeChip(close, onTap: () => _pickTime(day, 'close')),
-                    ] else
-                      Text("Closed",
-                          style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+                    ),
                   ],
                 ),
               );
@@ -703,18 +716,115 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
     );
   }
 
-  Widget _timeChip(String time, {required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFF0EE),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppColors.deepRed.withValues(alpha: 0.3)),
+  // ── Service Slots (time ranges) ──
+  Future<void> _saveServiceSlots() async {
+    final slug = AppState.instance.activeSlug;
+    await FirebaseFirestore.instance
+        .collection('businesses')
+        .doc(slug)
+        .update({'serviceSlots': _serviceSlots});
+  }
+
+  Future<void> _addServiceSlot() async {
+    final start = await showTimePicker(
+      context: context,
+      initialTime: const TimeOfDay(hour: 9, minute: 0),
+      helpText: 'START TIME',
+    );
+    if (start == null || !mounted) return;
+
+    final end = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+          hour: (start.hour + 4).clamp(0, 23), minute: start.minute),
+      helpText: 'END TIME',
+    );
+    if (end == null || !mounted) return;
+
+    final startMins = start.hour * 60 + start.minute;
+    final endMins   = end.hour * 60 + end.minute;
+    if (endMins <= startMins) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("End time must be after start time")),
+      );
+      return;
+    }
+
+    final startStr =
+        '${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')}';
+    final endStr =
+        '${end.hour.toString().padLeft(2, '0')}:${end.minute.toString().padLeft(2, '0')}';
+
+    setState(() => _serviceSlots.add({'start': startStr, 'end': endStr}));
+    await _saveServiceSlots();
+  }
+
+  Widget _buildServiceSlotsCard() {
+    final sorted = [..._serviceSlots]
+      ..sort((a, b) => (a['start'] ?? '').compareTo(b['start'] ?? ''));
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(children: [
+                  Icon(Icons.schedule, color: AppColors.deepRed, size: 20),
+                  SizedBox(width: 8),
+                  Text("Service Hours",
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                ]),
+                IconButton(
+                  onPressed: _addServiceSlot,
+                  icon: const Icon(Icons.add_circle,
+                      color: AppColors.deepRed, size: 26),
+                  tooltip: "Add service slot",
+                ),
+              ],
+            ),
+            const Divider(height: 8),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                sorted.isEmpty
+                    ? "Add time ranges — e.g. 9:00 AM to 1:00 PM"
+                    : "Customers book within these time windows",
+                style:
+                    TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              ),
+            ),
+            if (sorted.isNotEmpty)
+              ...sorted.map((slot) {
+                final start = slot['start']!;
+                final end   = slot['end']!;
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.access_time,
+                      size: 18, color: AppColors.deepRed),
+                  title: Text(
+                    "${_formatTime(start)}  →  ${_formatTime(end)}",
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline,
+                        color: Colors.red, size: 20),
+                    onPressed: () async {
+                      setState(() => _serviceSlots.remove(slot));
+                      await _saveServiceSlots();
+                    },
+                  ),
+                );
+              }),
+          ],
         ),
-        child: Text(_formatTime(time),
-            style: const TextStyle(fontSize: 13, color: AppColors.deepRed)),
       ),
     );
   }
@@ -775,8 +885,21 @@ class _EditBusinessPageState extends State<EditBusinessPage> {
                       trailing: IconButton(
                         icon: const Icon(Icons.delete_outline,
                             color: Colors.red, size: 20),
-                        onPressed: () =>
-                            setState(() => _holidays.removeAt(i)),
+                        onPressed: () async {
+                          setState(() => _holidays.removeAt(i));
+                          final slug = AppState.instance.activeSlug;
+                          await FirebaseFirestore.instance
+                              .collection('businesses')
+                              .doc(slug)
+                              .update({
+                            'holidays': _holidays
+                                .map((h) => {
+                                      'date': h['date'],
+                                      'reason': h['reason']
+                                    })
+                                .toList(),
+                          });
+                        },
                       ),
                     );
                   }),

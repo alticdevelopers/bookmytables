@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../core/app_state.dart';
 import '../core/notifications.dart';
 import '../core/theme.dart';
+import 'edit_business_page.dart';
 import 'menu_offers_page.dart';
 import 'tables_page.dart';
 
@@ -74,6 +75,14 @@ class _DashboardPageState extends State<DashboardPage> {
       appBar: AppBar(
         title: const Text("Book My Tables"),
         actions: [
+          IconButton(
+            tooltip: "Edit Business",
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const EditBusinessPage()),
+            ),
+            icon: const Icon(Icons.edit),
+          ),
           IconButton(
             tooltip: "Menu & Offers",
             onPressed: () => Navigator.push(

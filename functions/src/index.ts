@@ -1,4 +1,5 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { logger } from "firebase-functions";
 import * as admin from "firebase-admin";
 
 admin.initializeApp();
@@ -12,11 +13,15 @@ export const notifyNewBooking = onDocumentCreated(
 
     const data = snap.data();
     const slug = event.params.slug;
+    const requestId = event.params.requestId;
     const customer = data["customerName"] || "Someone";
     const guests = data["guests"] || 2;
     const datetime = data["datetime"]?.toDate
       ? data["datetime"].toDate().toLocaleString()
       : "soon";
+
+    const title = "New Table Booking!";
+    const body = `${customer} requested a table for ${guests} — Tap to view`;
 
     // Get restaurant owner info
     const bizRef = admin.firestore().collection("businesses").doc(slug);
@@ -25,7 +30,7 @@ export const notifyNewBooking = onDocumentCreated(
 
     const ownerEmail = bizSnap.data()?.["ownerEmail"];
     if (!ownerEmail) {
-      console.log("⚠️ No ownerEmail for", slug);
+      logger.warn("⚠️ No ownerEmail for", slug);
       return null;
     }
 
@@ -38,7 +43,7 @@ export const notifyNewBooking = onDocumentCreated(
       .get();
 
     if (userSnap.empty) {
-      console.log("⚠️ No user found for email", ownerEmail);
+      logger.warn("⚠️ No user found for email", ownerEmail);
       return null;
     }
 
@@ -46,28 +51,72 @@ export const notifyNewBooking = onDocumentCreated(
     const tokens: string[] = userDoc.data()["fcmTokens"] || [];
 
     if (!tokens.length) {
-      console.log("⚠️ No FCM tokens found for", ownerEmail);
+      logger.warn("⚠️ No FCM tokens found for", ownerEmail);
       return null;
     }
 
     // Build the notification payload
     const payload: admin.messaging.MulticastMessage = {
       notification: {
-        title: "🍽️ New Table Booking!",
-        body: `${customer} requested a table for ${guests} on ${datetime}`,
+        title,
+        body,
+      },
+      android: {
+        notification: {
+          channelId: "book_my_tables_default_channel",
+          priority: "high",
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: "default",
+            badge: 1,
+          },
+        },
       },
       data: {
+        bookingId: String(requestId),
+        customerName: String(customer),
+        guests: String(guests),
+        datetime: String(datetime),
         deep_link: "/dashboard",
+        title,
+        body,
       },
       tokens,
     };
 
     try {
       const res = await admin.messaging().sendEachForMulticast(payload);
-      console.log(`✅ Sent ${res.successCount} notification(s) for ${slug}`);
+      logger.info(`✅ Sent ${res.successCount} notification(s) for ${slug}`);
+
+      // Clean up stale/invalid tokens
+      const staleTokens: string[] = [];
+      res.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          const errCode = resp.error?.code;
+          if (
+            errCode === "messaging/invalid-registration-token" ||
+            errCode === "messaging/registration-token-not-registered"
+          ) {
+            staleTokens.push(tokens[idx]);
+          }
+          logger.warn(`Token ${tokens[idx]} failed: ${errCode}`);
+        }
+      });
+
+      // Remove stale tokens from the user's fcmTokens array
+      if (staleTokens.length > 0) {
+        await userDoc.ref.update({
+          fcmTokens: admin.firestore.FieldValue.arrayRemove(...staleTokens),
+        });
+        logger.info(`🧹 Cleaned up ${staleTokens.length} stale token(s)`);
+      }
+
       return res;
     } catch (err) {
-      console.error("❌ Error sending FCM:", err);
+      logger.error("❌ Error sending FCM:", err);
       return null;
     }
   }

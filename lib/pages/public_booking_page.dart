@@ -32,6 +32,7 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
   // Each holiday: { 'date': 'yyyy-MM-dd', 'reason': '...' }
   List<Map<String, String>> _holidays = [];
   Map<String, bool> _dayOpen = {};  // 'monday' → true/false
+  List<Map<String, String>> _serviceSlots = [];    // time ranges {start, end}
 
   // UTC offset in minutes for the business timezone (no DST — best-effort)
   static const Map<String, int> _tzOffsetMinutes = {
@@ -123,11 +124,30 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
       }
     }
 
+    // Parse service slots (time ranges)
+    List<Map<String, String>> newServiceSlots = [];
+    if (data['serviceSlots'] is List) {
+      newServiceSlots = (data['serviceSlots'] as List)
+          .map<Map<String, String>>((s) => {
+                'start': (s['start'] ?? '').toString(),
+                'end':   (s['end']   ?? '').toString(),
+              })
+          .toList()
+        ..sort((a, b) => (a['start'] ?? '').compareTo(b['start'] ?? ''));
+    }
+
     setState(() {
-      _biz      = data;
-      _timezone = newTimezone;
-      _holidays = newHolidays;
-      _dayOpen  = newDayOpen;
+      _biz          = data;
+      _timezone     = newTimezone;
+      _holidays     = newHolidays;
+      _dayOpen      = newDayOpen;
+      _serviceSlots = newServiceSlots;
+      // Snap selectedTime to first service slot start (if any)
+      if (newServiceSlots.isNotEmpty) {
+        final p = newServiceSlots.first['start']!.split(':');
+        selectedTime =
+            TimeOfDay(hour: int.parse(p[0]), minute: int.parse(p[1]));
+      }
     });
   }
 
@@ -358,27 +378,85 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                           ),
                         ),
                       ),
-                      Expanded(
-                        child: ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text("Time"),
-                          subtitle: Text(selectedTime.format(context)),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.access_time),
-                            onPressed: () async {
-                              final picked = await showTimePicker(
-                                context: context,
-                                initialTime: selectedTime,
-                              );
-                              if (picked != null) {
-                                setState(() => selectedTime = picked);
-                              }
-                            },
+                      if (_serviceSlots.isEmpty)
+                        Expanded(
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("Time"),
+                            subtitle: Text(selectedTime.format(context)),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.access_time),
+                              onPressed: () async {
+                                final picked = await showTimePicker(
+                                  context: context,
+                                  initialTime: selectedTime,
+                                );
+                                if (picked != null) {
+                                  setState(() => selectedTime = picked);
+                                }
+                              },
+                            ),
                           ),
                         ),
-                      ),
                     ],
                   ),
+
+                  // ── Service slot range chips ──
+                  if (_serviceSlots.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    const Text("Select Time Slot",
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _serviceSlots.map((slot) {
+                        final sp = slot['start']!.split(':');
+                        final ep = slot['end']!.split(':');
+                        final slotStart = TimeOfDay(
+                            hour: int.parse(sp[0]),
+                            minute: int.parse(sp[1]));
+                        final isSelected =
+                            selectedTime.hour == slotStart.hour &&
+                                selectedTime.minute == slotStart.minute;
+                        final startLabel = slotStart.format(context);
+                        final endLabel = TimeOfDay(
+                                hour: int.parse(ep[0]),
+                                minute: int.parse(ep[1]))
+                            .format(context);
+                        return GestureDetector(
+                          onTap: () =>
+                              setState(() => selectedTime = slotStart),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? AppColors.deepRed
+                                  : AppColors.deepRed.withValues(alpha: 0.07),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: AppColors.deepRed.withValues(
+                                    alpha: isSelected ? 1 : 0.3),
+                              ),
+                            ),
+                            child: Text(
+                              "$startLabel – $endLabel",
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: isSelected
+                                    ? Colors.white
+                                    : AppColors.deepRed,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
 
                   // ── Selected date blocked label ──
                   if (_whyBlocked(selectedDate) != null)
@@ -677,96 +755,87 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     final sorted = [..._holidays]
       ..sort((a, b) => (a['date'] ?? '').compareTo(b['date'] ?? ''));
 
-    return Card(
-      key: ValueKey('holidays_${sorted.length}'),
-      elevation: 1,
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: ExpansionTile(
-        initiallyExpanded: sorted.isNotEmpty,
-        leading: const Icon(Icons.event_busy, color: Colors.orange, size: 22),
-        title: const Text(
-          'Holidays',
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.orange.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                '${sorted.length}',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Colors.orange,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const Icon(Icons.expand_more),
-          ],
-        ),
-        children: [
-          const Divider(height: 1),
-          if (sorted.isEmpty)
-            _publicEmptyText('No holidays listed')
-          else
-            Column(
-              children: sorted.map((h) {
-                final dateStr = h['date'] ?? '';
-                final reason  = (h['reason'] ?? '').trim();
-                String dateLabel = dateStr;
-                try {
-                  dateLabel = DateFormat('EEE, MMM d yyyy')
-                      .format(DateTime.parse(dateStr));
-                } catch (_) {}
-                final todayStr =
-                    DateFormat('yyyy-MM-dd').format(DateTime.now());
-                final isToday = dateStr == todayStr;
-                return ListTile(
-                  dense: true,
-                  leading: Icon(
-                    isToday ? Icons.celebration : Icons.event_busy,
-                    size: 18,
-                    color: Colors.orange,
-                  ),
-                  title: Text(
-                    dateLabel,
-                    style: const TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: reason.isNotEmpty
-                      ? Text(reason)
-                      : isToday
-                          ? const Text('Today is a holiday')
-                          : null,
-                  trailing: isToday
-                      ? Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.shade100,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Text(
-                            'Today',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.orange,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        )
-                      : null,
-                );
-              }).toList(),
-            ),
-          const SizedBox(height: 8),
-        ],
+    if (sorted.isEmpty) return const SizedBox.shrink();
+
+    return _SmoothExpandCard(
+      key: const ValueKey('holidays_card'),
+      initiallyExpanded: sorted.isNotEmpty,
+      leading: const Icon(Icons.event_busy, color: Colors.orange, size: 22),
+      title: const Text(
+        'Holidays',
+        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
       ),
+      badge: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          '${sorted.length}',
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.orange,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+      children: [
+        const Divider(height: 1),
+        if (sorted.isEmpty)
+          _publicEmptyText('No holidays listed')
+        else
+          Column(
+            children: sorted.map((h) {
+              final dateStr = h['date'] ?? '';
+              final reason  = (h['reason'] ?? '').trim();
+              String dateLabel = dateStr;
+              try {
+                dateLabel = DateFormat('EEE, MMM d yyyy')
+                    .format(DateTime.parse(dateStr));
+              } catch (_) {}
+              final todayStr =
+                  DateFormat('yyyy-MM-dd').format(DateTime.now());
+              final isToday = dateStr == todayStr;
+              return ListTile(
+                dense: true,
+                leading: Icon(
+                  isToday ? Icons.celebration : Icons.event_busy,
+                  size: 18,
+                  color: Colors.orange,
+                ),
+                title: Text(
+                  dateLabel,
+                  style: const TextStyle(fontWeight: FontWeight.w500),
+                ),
+                subtitle: reason.isNotEmpty
+                    ? Text(reason)
+                    : isToday
+                        ? const Text('Today is a holiday')
+                        : null,
+                trailing: isToday
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade100,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Text(
+                          'Today',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.orange,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      )
+                    : null,
+              );
+            }).toList(),
+          ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 
@@ -777,51 +846,41 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     required Widget Function(List<QueryDocumentSnapshot<Map<String, dynamic>>>) builder,
     Color iconColor = AppColors.deepRed,
   }) {
-    return Card(
-      elevation: 1,
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: stream,
-        builder: (context, snap) {
-          final docs = snap.data?.docs ?? [];
-          return ExpansionTile(
-            leading: Icon(icon, color: iconColor, size: 22),
-            title: Text(title,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w700, fontSize: 15)),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (snap.connectionState == ConnectionState.waiting)
-                  const SizedBox(
-                      width: 16, height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                else
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.deepRed.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text('${docs.length}',
-                        style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.deepRed,
-                            fontWeight: FontWeight.bold)),
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snap) {
+        final docs = snap.data?.docs ?? [];
+        return _SmoothExpandCard(
+          key: ValueKey('info_tile_$title'),
+          showArrow: false,
+          leading: Icon(icon, color: iconColor, size: 22),
+          title: Text(title,
+              style: const TextStyle(
+                  fontWeight: FontWeight.w700, fontSize: 15)),
+          badge: snap.connectionState == ConnectionState.waiting
+              ? const SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.deepRed.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                const Icon(Icons.expand_more),
-              ],
-            ),
-            children: [
-              const Divider(height: 1),
-              builder(docs),
-              const SizedBox(height: 8),
-            ],
-          );
-        },
-      ),
+                  child: Text('${docs.length}',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.deepRed,
+                          fontWeight: FontWeight.bold)),
+                ),
+          children: [
+            const Divider(height: 1),
+            builder(docs),
+            const SizedBox(height: 8),
+          ],
+        );
+      },
     );
   }
 
@@ -1167,6 +1226,99 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Smooth expanding card with AnimatedSize + rotating arrow ──
+class _SmoothExpandCard extends StatefulWidget {
+  final Widget leading;
+  final Widget title;
+  final Widget badge;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+  final bool showArrow;
+
+  const _SmoothExpandCard({
+    super.key,
+    required this.leading,
+    required this.title,
+    required this.badge,
+    required this.children,
+    this.initiallyExpanded = false,
+    this.showArrow = true,
+  });
+
+  @override
+  State<_SmoothExpandCard> createState() => _SmoothExpandCardState();
+}
+
+class _SmoothExpandCardState extends State<_SmoothExpandCard> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
+
+  @override
+  void didUpdateWidget(_SmoothExpandCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initiallyExpanded != oldWidget.initiallyExpanded) {
+      _expanded = widget.initiallyExpanded;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  widget.leading,
+                  const SizedBox(width: 16),
+                  Expanded(child: widget.title),
+                  widget.badge,
+                  if (widget.showArrow) ...[
+                    const SizedBox(width: 8),
+                    AnimatedRotation(
+                      turns: _expanded ? 0.5 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      child: const Icon(Icons.expand_more),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          ClipRect(
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: _expanded
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: widget.children,
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
+        ],
       ),
     );
   }

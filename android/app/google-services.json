@@ -22,6 +22,22 @@
           }
         },
         {
+          "client_id": "394858722821-hjvo63nfo602dlm54855qhnk39qr8vnu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bookmytables.bookmytables",
+            "certificate_hash": "0624403ac3004a2944ad66d44f265cf4c510d634"
+          }
+        },
+        {
+          "client_id": "394858722821-ou7nkkj5f2hgmn743ig1qg0ikm7g705h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bookmytables.bookmytables",
+            "certificate_hash": "7294a69dca96a471934f759b15d81be991293053"
+          }
+        },
+        {
           "client_id": "394858722821-tpqkn9paa1q809bnt7g19f5r4uch7dp8.apps.googleusercontent.com",
           "client_type": 3
         }

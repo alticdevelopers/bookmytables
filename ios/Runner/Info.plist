@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Required to upload your restaurant logo.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Required to save images to your photo library.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Required to take a photo for your restaurant logo.</string>
 </dict>
 </plist>

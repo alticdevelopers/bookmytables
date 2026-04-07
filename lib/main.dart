@@ -8,6 +8,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'core/theme.dart';
 import 'core/app_state.dart';
 import 'firebase_options.dart';
@@ -78,6 +79,9 @@ Future<void> main() async {
   }
 
   if (!kIsWeb) {
+    // Google Sign-In (mobile only)
+    await GoogleSignIn.instance.initialize();
+
     // Background messages (mobile only)
     FirebaseMessaging.onBackgroundMessage(fcmBackgroundHandler);
 
