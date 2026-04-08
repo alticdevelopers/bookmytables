@@ -191,6 +191,8 @@ class ReservationRequest {
   final DateTime datetime;
   final String? phone;
   final String? notes;
+  final String? tableId;
+  final String? tableName;
   final RequestStatus status;
 
   ReservationRequest({
@@ -200,6 +202,8 @@ class ReservationRequest {
     required this.datetime,
     this.phone,
     this.notes,
+    this.tableId,
+    this.tableName,
     this.status = RequestStatus.pending,
   });
 
@@ -210,6 +214,8 @@ class ReservationRequest {
     "datetime": Timestamp.fromDate(datetime),
     "phone": phone,
     "notes": notes,
+    "tableId": tableId,
+    "tableName": tableName,
     "status": status.name,
   };
 
@@ -220,6 +226,8 @@ class ReservationRequest {
     "datetime": Timestamp.fromDate(datetime),
     "phone": phone,
     "notes": notes,
+    "tableId": tableId,
+    "tableName": tableName,
     "createdAt": FieldValue.serverTimestamp(),
   };
 
@@ -230,6 +238,8 @@ class ReservationRequest {
     datetime: (m["datetime"] as Timestamp).toDate(),
     phone: m["phone"],
     notes: m["notes"],
+    tableId: m["tableId"],
+    tableName: m["tableName"],
     status: RequestStatus.values.firstWhere(
           (s) => s.name == (m["status"] ?? "pending"),
       orElse: () => RequestStatus.pending,
@@ -244,6 +254,8 @@ class Reservation {
   final DateTime datetime;
   final String? phone;
   final String? notes;
+  final String? tableId;
+  final String? tableName;
 
   Reservation({
     required this.id,
@@ -252,6 +264,8 @@ class Reservation {
     required this.datetime,
     this.phone,
     this.notes,
+    this.tableId,
+    this.tableName,
   });
 
   Map<String, dynamic> toMap() => {
@@ -261,6 +275,8 @@ class Reservation {
     "datetime": Timestamp.fromDate(datetime),
     "phone": phone,
     "notes": notes,
+    "tableId": tableId,
+    "tableName": tableName,
   };
 
   static Reservation fromMap(Map<String, dynamic> m) => Reservation(
@@ -270,6 +286,8 @@ class Reservation {
     datetime: (m["datetime"] as Timestamp).toDate(),
     phone: m["phone"],
     notes: m["notes"],
+    tableId: m["tableId"],
+    tableName: m["tableName"],
   );
 }
 

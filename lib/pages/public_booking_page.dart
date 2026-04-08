@@ -32,7 +32,20 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
   // Each holiday: { 'date': 'yyyy-MM-dd', 'reason': '...' }
   List<Map<String, String>> _holidays = [];
   Map<String, bool> _dayOpen = {};  // 'monday' → true/false
+  Map<String, Map<String, dynamic>> _businessHours = {};  // full hours per day
   List<Map<String, String>> _serviceSlots = [];    // time ranges {start, end}
+
+  // ── Table selection ──
+  List<Map<String, dynamic>> _availableTables = [];
+  String? _selectedTableId;
+  String? _selectedTableName;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tableSub;
+
+  // ── Today's Specials + Offers ──
+  List<Map<String, dynamic>> _todaysSpecials = [];
+  List<Map<String, dynamic>> _activeOffers   = [];
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _specialsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _offersSub;
 
   // UTC offset in minutes for the business timezone (no DST — best-effort)
   static const Map<String, int> _tzOffsetMinutes = {
@@ -74,6 +87,59 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
       _parseBizData(snap.data()!);
     }, onError: (e) => debugPrint("Biz stream error: $e"));
 
+    // Listen to available tables
+    _tableSub = FirebaseFirestore.instance
+        .collection("businesses")
+        .doc(widget.slug)
+        .collection("tables")
+        .where("available", isEqualTo: true)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _availableTables = snap.docs.map((d) => Map<String, dynamic>.from(d.data())).toList();
+        // Clear selection if selected table is no longer available
+        if (_selectedTableId != null &&
+            !_availableTables.any((t) => t['id'] == _selectedTableId)) {
+          _selectedTableId = null;
+          _selectedTableName = null;
+        }
+      });
+    }, onError: (e) => debugPrint("Tables stream error: $e"));
+
+    // Listen to today's specials
+    _specialsSub = FirebaseFirestore.instance
+        .collection("businesses")
+        .doc(widget.slug)
+        .collection("menu")
+        .where("special", isEqualTo: true)
+        .where("available", isEqualTo: true)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _todaysSpecials = snap.docs
+            .map((d) => Map<String, dynamic>.from(d.data()))
+            .toList();
+      });
+    }, onError: (e) => debugPrint("Specials stream error: $e"));
+
+    // Listen to active offers
+    _offersSub = FirebaseFirestore.instance
+        .collection("businesses")
+        .doc(widget.slug)
+        .collection("offers")
+        .where("active", isEqualTo: true)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _activeOffers = snap.docs
+            .map((d) => Map<String, dynamic>.from(d.data()))
+            .toList();
+      });
+    }, onError: (e) => debugPrint("Offers stream error: $e"));
+
     // Auth in background — Firestore will re-emit once signed in
     _ensureAuth();
   }
@@ -91,6 +157,9 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
   @override
   void dispose() {
     _bizSub?.cancel();
+    _tableSub?.cancel();
+    _specialsSub?.cancel();
+    _offersSub?.cancel();
     super.dispose();
   }
 
@@ -116,11 +185,19 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
 
     // Parse business hours
     final Map<String, bool> newDayOpen = {};
+    final Map<String, Map<String, dynamic>> newBusinessHours = {};
     if (data['businessHours'] is Map) {
       final hours = data['businessHours'] as Map<String, dynamic>;
       for (final day in _dayKeys) {
         final d = hours[day];
         newDayOpen[day] = (d is Map) ? (d['isOpen'] == true) : true;
+        if (d is Map) {
+          newBusinessHours[day] = {
+            'isOpen': d['isOpen'] == true,
+            'open':   (d['open']  ?? '').toString(),
+            'close':  (d['close'] ?? '').toString(),
+          };
+        }
       }
     }
 
@@ -137,11 +214,12 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     }
 
     setState(() {
-      _biz          = data;
-      _timezone     = newTimezone;
-      _holidays     = newHolidays;
-      _dayOpen      = newDayOpen;
-      _serviceSlots = newServiceSlots;
+      _biz            = data;
+      _timezone       = newTimezone;
+      _holidays       = newHolidays;
+      _dayOpen        = newDayOpen;
+      _businessHours  = newBusinessHours;
+      _serviceSlots   = newServiceSlots;
       // Snap selectedTime to first service slot start (if any)
       if (newServiceSlots.isNotEmpty) {
         final p = newServiceSlots.first['start']!.split(':');
@@ -203,18 +281,16 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     return fallback;
   }
 
-  bool _b(Map<String, dynamic> m, String k, {bool fallback = false}) {
-    final v = m[k];
-    if (v is bool) return v;
-    if (v is String) return v.toLowerCase() == "true";
-    return fallback;
-  }
-
   Future<void> _bookTable() async {
     final nm = name.text.trim();
     final ph = phone.text.trim();
     if (nm.isEmpty || ph.isEmpty) {
       setState(() => _error = "Name and phone are required.");
+      return;
+    }
+
+    if (_availableTables.isNotEmpty && _selectedTableId == null) {
+      setState(() => _error = "Please select a table.");
       return;
     }
 
@@ -250,6 +326,8 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         "datetime": Timestamp.fromDate(utcWhen),
         "phone": ph,
         "notes": notes.text.trim(),
+        "tableId": _selectedTableId,
+        "tableName": _selectedTableName,
         "status": "pending",
         "timezone": _timezone,
         "createdAt": FieldValue.serverTimestamp(),
@@ -257,6 +335,7 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
 
       if (!mounted) return;
       name.clear(); phone.clear(); notes.clear(); guests.text = "2";
+      setState(() { _selectedTableId = null; _selectedTableName = null; });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Request sent! The restaurant will confirm soon.")),
       );
@@ -333,19 +412,15 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                     _buildTodayHolidayBanner(),
                     _buildAvailabilityNotice(),
                     _buildPublicInfoSections(widget.slug),
-                    const SizedBox(height: 16),
-                    Text("Booking Details",
+                    const SizedBox(height: 24),
+                    Text("Make a Reservation",
                         style: Theme.of(context).textTheme.titleLarge),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 16),
                   ],
-                  _inputField(name, "Your Name", Icons.person),
-                  _inputField(phone, "Phone", Icons.phone,
-                      keyboard: TextInputType.phone),
-                  _inputField(guests, "Number of Guests", Icons.group,
-                      keyboard: TextInputType.number),
-                  const SizedBox(height: 10),
 
-                  // ── Date & Time row ──
+                  // ── Step 1: Select Date & Time ──
+                  _stepLabel("Select Time Slot", icon: Icons.access_time),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
@@ -356,7 +431,6 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                           trailing: IconButton(
                             icon: const Icon(Icons.calendar_today),
                             onPressed: () async {
-                              // Advance selectedDate if currently blocked
                               DateTime initial = selectedDate;
                               if (!_isDateSelectable(initial)) {
                                 initial = DateTime.now();
@@ -401,13 +475,9 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                     ],
                   ),
 
-                  // ── Service slot range chips ──
+                  // ── Service slot chips ──
                   if (_serviceSlots.isNotEmpty) ...[
                     const SizedBox(height: 4),
-                    const Text("Select Time Slot",
-                        style: TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 8),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
@@ -458,7 +528,7 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                     const SizedBox(height: 8),
                   ],
 
-                  // ── Selected date blocked label ──
+                  // ── Blocked date notice ──
                   if (_whyBlocked(selectedDate) != null)
                     Builder(builder: (context) {
                       final reason = _whyBlocked(selectedDate)!;
@@ -508,6 +578,27 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                       ),
                     ),
 
+                  // ── Step 2: Select Table ──
+                  if (_availableTables.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    _stepLabel("Available Table", icon: Icons.table_bar),
+                    const SizedBox(height: 10),
+                    _buildTableSelector(),
+                  ],
+
+                  // ── Step 3: Guest Details ──
+                  const SizedBox(height: 20),
+                  _stepLabel("Your Details", icon: Icons.person),
+                  const SizedBox(height: 10),
+                  _inputField(name, "Your Name", Icons.person),
+                  _inputField(phone, "Phone", Icons.phone,
+                      keyboard: TextInputType.phone),
+                  _inputField(guests, "Number of Guests", Icons.group,
+                      keyboard: TextInputType.number),
+
+                  // ── Step 4: Special Requests ──
+                  const SizedBox(height: 8),
+                  _stepLabel("Special Requests", icon: Icons.edit_note),
                   const SizedBox(height: 10),
                   TextField(
                     controller: notes,
@@ -518,12 +609,16 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                       alignLabelWithHint: true,
                     ),
                   ),
+
+                  // ── Step 5: Submit ──
                   const SizedBox(height: 20),
                   if (_error != null)
-                    Text(_error!,
-                        style: const TextStyle(
-                            color: Colors.red, fontSize: 14)),
-                  const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(_error!,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 14)),
+                    ),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
@@ -532,11 +627,6 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                       label: const Text("Submit Booking"),
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  Text("Available Tables",
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  _tablesStreamList(),
                 ],
               ),
             ),
@@ -600,19 +690,126 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
     );
   }
 
+  // ── Step label ──
+  Widget _stepLabel(String title, {required IconData icon}) {
+    return Card(
+      elevation: 1,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, color: AppColors.deepRed, size: 22),
+            const SizedBox(width: 16),
+            Text(title,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 15)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Selectable table list ──
+  Widget _buildTableSelector() {
+    return Column(
+      children: _availableTables.map((table) {
+        final id       = (table['id'] ?? '').toString();
+        final tName    = (table['name'] ?? '').toString();
+        final seats    = _i(table, 'seats');
+        final location = _s(table, 'location');
+        final isSelected = _selectedTableId == id;
+
+        return GestureDetector(
+          onTap: () => setState(() {
+            _selectedTableId   = id;
+            _selectedTableName = tName;
+          }),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? AppColors.deepRed.withValues(alpha: 0.08)
+                  : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.deepRed
+                    : Colors.grey.shade300,
+                width: isSelected ? 2 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.table_bar,
+                    color: isSelected ? AppColors.deepRed : Colors.grey.shade500,
+                    size: 22),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(tName,
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                              color: isSelected
+                                  ? AppColors.deepRed
+                                  : Colors.black87)),
+                      if (location.isNotEmpty)
+                        Text(location,
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade600)),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? AppColors.deepRed.withValues(alpha: 0.12)
+                        : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '$seats seat${seats != 1 ? 's' : ''}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected
+                            ? AppColors.deepRed
+                            : Colors.grey.shade700),
+                  ),
+                ),
+                if (isSelected) ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.check_circle,
+                      color: AppColors.deepRed, size: 20),
+                ],
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   // ═══════════════ PUBLIC INFO SECTIONS ═══════════════
   Widget _buildPublicInfoSections(String slug) {
     final menuStream = FirebaseFirestore.instance
         .collection('businesses').doc(slug).collection('menu')
         .where('available', isEqualTo: true)
         .snapshots();
-    final offersStream = FirebaseFirestore.instance
-        .collection('businesses').doc(slug).collection('offers')
-        .where('active', isEqualTo: true)
-        .snapshots();
 
     return Column(
       children: [
+        // ── Service Hours ──
+        _buildServiceHoursSection(),
+
         // ── Holidays ──
         _buildHolidaysSection(),
 
@@ -625,19 +822,17 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
             if (docs.isEmpty) return _publicEmptyText('No items available');
             return Column(
               children: docs.map((d) {
-                final data     = d.data();
-                final name     = _s(data, 'name');
-                final price    = _s(data, 'price') != ''
+                final data  = d.data();
+                final name  = _s(data, 'name');
+                final price = _s(data, 'price') != ''
                     ? (data['price'] as num?)?.toStringAsFixed(2) ?? '0.00'
                     : '0.00';
-                final category = _s(data, 'category');
                 return ListTile(
                   dense: true,
                   leading: const Icon(Icons.circle,
                       size: 8, color: AppColors.deepRed),
                   title: Text(name,
                       style: const TextStyle(fontWeight: FontWeight.w500)),
-                  subtitle: category.isNotEmpty ? Text(category) : null,
                   trailing: Text('₹$price',
                       style: const TextStyle(
                           fontWeight: FontWeight.w600,
@@ -648,62 +843,168 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
           },
         ),
 
-        // ── Available Types ──
-        _infoExpansionTile(
-          icon: Icons.category,
-          title: 'Available Types',
-          stream: menuStream,
-          builder: (docs) {
-            if (docs.isEmpty) return _publicEmptyText('No categories available');
-            final Map<String, int> categories = {};
-            for (final d in docs) {
-              final cat = _s(d.data(), 'category').trim();
-              final key = cat.isEmpty ? 'Other' : cat;
-              categories[key] = (categories[key] ?? 0) + 1;
-            }
-            final keys = categories.keys.toList()..sort();
-            return Column(
-              children: keys.map((cat) => ListTile(
-                dense: true,
-                leading: const Icon(Icons.label_outline,
-                    size: 18, color: AppColors.deepRed),
-                title: Text(cat,
-                    style: const TextStyle(fontWeight: FontWeight.w500)),
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.deepRed.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${categories[cat]} item${categories[cat]! > 1 ? 's' : ''}',
-                    style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.deepRed,
-                        fontWeight: FontWeight.w600),
-                  ),
-                ),
-              )).toList(),
-            );
-          },
-        ),
+        // ── Today's Specials + Offers ──
+        _buildTodaysSpecialsSection(),
 
-        // ── Today's Specials ──
-        _infoExpansionTile(
-          icon: Icons.star,
-          title: "Today's Specials",
-          iconColor: AppColors.gold,
-          stream: FirebaseFirestore.instance
-              .collection('businesses').doc(slug).collection('menu')
-              .where('special', isEqualTo: true)
-              .where('available', isEqualTo: true)
-              .snapshots(),
-          builder: (docs) {
-            if (docs.isEmpty) return _publicEmptyText('No specials today');
-            return Column(
-              children: docs.map((d) {
-                final data  = d.data();
+      ],
+    );
+  }
+
+  String _formatTime(String t) {
+    try {
+      final parts = t.split(':');
+      final h = int.parse(parts[0]);
+      final m = int.parse(parts[1]);
+      final period = h < 12 ? 'AM' : 'PM';
+      final hour12 = h % 12 == 0 ? 12 : h % 12;
+      return '$hour12:${m.toString().padLeft(2, '0')} $period';
+    } catch (_) {
+      return t;
+    }
+  }
+
+  Widget _buildServiceHoursSection() {
+    if (_businessHours.isEmpty && _serviceSlots.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final todayKey = _dayKeys[DateTime.now().weekday - 1];
+
+    // Per-day open/close rows
+    final dayRows = _businessHours.isEmpty
+        ? <Widget>[]
+        : _dayKeys.map((day) {
+            final info = _businessHours[day];
+            if (info == null) return const SizedBox.shrink();
+            final isOpen  = info['isOpen'] == true;
+            final open    = (info['open']  as String? ?? '');
+            final close   = (info['close'] as String? ?? '');
+            final label   = day[0].toUpperCase() + day.substring(1);
+            final isToday = day == todayKey;
+            return ListTile(
+              dense: true,
+              leading: Icon(
+                isOpen ? Icons.schedule : Icons.block,
+                size: 18,
+                color: isOpen ? AppColors.deepRed : Colors.grey,
+              ),
+              title: Text(
+                label,
+                style: TextStyle(
+                  fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
+                  color: isToday ? AppColors.deepRed : null,
+                ),
+              ),
+              trailing: Text(
+                isOpen
+                    ? (open.isNotEmpty && close.isNotEmpty
+                        ? '${_formatTime(open)} – ${_formatTime(close)}'
+                        : 'Open')
+                    : 'Closed',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
+                  color: isOpen ? Colors.black87 : Colors.grey,
+                ),
+              ),
+            );
+          }).toList();
+
+    // Service slot rows (booking time windows)
+    final sorted = [..._serviceSlots]
+      ..sort((a, b) => (a['start'] ?? '').compareTo(b['start'] ?? ''));
+    final slotRows = sorted.map((slot) {
+      final start = slot['start'] ?? '';
+      final end   = slot['end']   ?? '';
+      return ListTile(
+        dense: true,
+        leading: const Icon(Icons.access_time_filled,
+            size: 18, color: AppColors.deepRed),
+        title: Text(
+          '${_formatTime(start)}  –  ${_formatTime(end)}',
+          style: const TextStyle(fontWeight: FontWeight.w500),
+        ),
+      );
+    }).toList();
+
+    return _SmoothExpandCard(
+      key: const ValueKey('hours_card'),
+      initiallyExpanded: true,
+      leading: const Icon(Icons.access_time, color: AppColors.deepRed, size: 22),
+      title: const Text(
+        'Service Hours',
+        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+      ),
+      badge: const SizedBox.shrink(),
+      children: [
+        const Divider(height: 1),
+        if (slotRows.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+            child: Text(
+              'Booking Windows',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade600,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ),
+          Column(children: slotRows),
+        ],
+        if (dayRows.isNotEmpty) ...[
+          if (slotRows.isNotEmpty)
+            const Divider(height: 1, indent: 16, endIndent: 16),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+            child: Text(
+              'Weekly Schedule',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade600,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ),
+          Column(children: dayRows),
+        ],
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  Widget _buildTodaysSpecialsSection() {
+    final totalCount = _todaysSpecials.length + _activeOffers.length;
+
+    return _SmoothExpandCard(
+      key: const ValueKey('specials_offers_card'),
+      showArrow: false,
+      initiallyExpanded: true,
+      leading: const Icon(Icons.star, color: AppColors.gold, size: 22),
+      title: const Text("Today's Specials",
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+      badge: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: AppColors.gold.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text('$totalCount',
+            style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.gold,
+                fontWeight: FontWeight.bold)),
+      ),
+      children: [
+        const Divider(height: 1),
+        if (_todaysSpecials.isEmpty && _activeOffers.isEmpty)
+          _publicEmptyText('No specials or offers today')
+        else
+          Column(
+            children: [
+              ..._todaysSpecials.map((data) {
                 final name  = _s(data, 'name');
                 final price = (data['price'] as num?)?.toStringAsFixed(2) ?? '0.00';
                 return ListTile(
@@ -717,21 +1018,8 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                           fontWeight: FontWeight.w600,
                           color: AppColors.deepRed)),
                 );
-              }).toList(),
-            );
-          },
-        ),
-
-        // ── Offers ──
-        _infoExpansionTile(
-          icon: Icons.local_offer,
-          title: 'Offers',
-          stream: offersStream,
-          builder: (docs) {
-            if (docs.isEmpty) return _publicEmptyText('No active offers');
-            return Column(
-              children: docs.map((d) {
-                final data  = d.data();
+              }),
+              ..._activeOffers.map((data) {
                 final title = _s(data, 'title');
                 final desc  = _s(data, 'description');
                 return ListTile(
@@ -742,11 +1030,10 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
                       style: const TextStyle(fontWeight: FontWeight.w500)),
                   subtitle: desc.isNotEmpty ? Text(desc) : null,
                 );
-              }).toList(),
-            );
-          },
-        ),
-
+              }),
+            ],
+          ),
+        const SizedBox(height: 8),
       ],
     );
   }
@@ -889,53 +1176,6 @@ class _PublicBookingPageState extends State<PublicBookingPage> {
         child: Text(msg,
             style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
       );
-
-  Widget _tablesStreamList() {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection("businesses")
-          .doc(widget.slug)
-          .collection("tables")
-          .where("available", isEqualTo: true)
-          .snapshots(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            child: SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(strokeWidth: 3)),
-          );
-        }
-        final docs = snap.data?.docs ?? const [];
-        if (docs.isEmpty) {
-          return const Text("No tables currently available.");
-        }
-        return Column(
-          children: docs.map((d) {
-            final t = Map<String, dynamic>.from(d.data());
-            final title = "${_s(t, 'name')} • ${_i(t, 'seats')} seats";
-            final sub = _s(t, 'location', fallback: "—");
-            final available = _b(t, 'available', fallback: true);
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading:
-                    const Icon(Icons.table_bar, color: AppColors.deepRed),
-                title: Text(title),
-                subtitle: Text(sub),
-                trailing: Icon(
-                  available ? Icons.check_circle : Icons.block,
-                  color: available ? Colors.green : Colors.redAccent,
-                ),
-              ),
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
 
   Widget _inputField(TextEditingController c, String label, IconData icon,
       {TextInputType? keyboard}) {

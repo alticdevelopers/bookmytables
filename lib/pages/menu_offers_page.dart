@@ -17,7 +17,7 @@ class _MenuOffersPageState extends State<MenuOffersPage>
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 4, vsync: this);
+    _tab = TabController(length: 3, vsync: this);
     _tab.addListener(() => setState(() {}));
   }
 
@@ -65,7 +65,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
           tabAlignment: TabAlignment.start,
           tabs: const [
             Tab(icon: Icon(Icons.restaurant_menu, size: 18), text: 'Menu'),
-            Tab(icon: Icon(Icons.category, size: 18), text: 'Available Types'),
             Tab(icon: Icon(Icons.star, size: 18), text: "Today's Specials"),
             Tab(icon: Icon(Icons.local_offer, size: 18), text: 'Offers'),
           ],
@@ -75,7 +74,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
         controller: _tab,
         children: [
           _menuTab(slug),
-          _typesTab(slug),
           _specialsTab(slug),
           _offersTab(slug),
         ],
@@ -87,17 +85,16 @@ class _MenuOffersPageState extends State<MenuOffersPage>
   // ── FAB — context-aware per tab ──
   Widget? _buildFab(String slug) {
     final idx = _tab.index;
-    if (idx == 2) return null; // Specials — mark from Menu tab
-    if (idx == 1) return null; // Types — auto-generated from menu
+    if (idx == 1) return null; // Specials — mark from Menu tab
 
     return FloatingActionButton.extended(
       backgroundColor: AppColors.deepRed,
       foregroundColor: Colors.white,
       icon: const Icon(Icons.add),
-      label: Text(idx == 3 ? 'Add Offer' : 'Add Item'),
+      label: Text(idx == 2 ? 'Add Offer' : 'Add Item'),
       onPressed: () {
         if (idx == 0) _showAddMenuDialog(slug);
-        if (idx == 3) _showAddOfferDialog(slug);
+        if (idx == 2) _showAddOfferDialog(slug);
       },
     );
   }
@@ -127,7 +124,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
             final id       = docs[i].id;
             final name     = _s(data, 'name');
             final price    = _d(data, 'price');
-            final category = _s(data, 'category');
             final available = _b(data, 'available');
             final isSpecial = _b(data, 'special', fallback: false);
 
@@ -165,8 +161,7 @@ class _MenuOffersPageState extends State<MenuOffersPage>
                                   fontSize: 15)),
                           const SizedBox(height: 2),
                           Text(
-                            '₹${price.toStringAsFixed(2)}'
-                            '${category.isNotEmpty ? '  •  $category' : ''}',
+                            '₹${price.toStringAsFixed(2)}',
                             style: TextStyle(
                                 color: Colors.grey.shade600,
                                 fontSize: 13),
@@ -202,84 +197,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
     );
   }
 
-  // ═══════════════════════ AVAILABLE TYPES TAB ═══════════════════════
-  Widget _typesTab(String slug) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _menuCol(slug).snapshots(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final docs = snap.data?.docs ?? [];
-        if (docs.isEmpty) {
-          return _emptyState(
-            icon: Icons.category,
-            title: 'No categories yet',
-            subtitle: 'Add menu items with categories to see them here',
-          );
-        }
-
-        // Group by category
-        final Map<String, List<Map<String, dynamic>>> grouped = {};
-        for (final d in docs) {
-          final data     = d.data();
-          final category = _s(data, 'category').trim();
-          final key      = category.isEmpty ? 'Uncategorised' : category;
-          grouped.putIfAbsent(key, () => []);
-          grouped[key]!.add({...data, '_id': d.id});
-        }
-        final keys = grouped.keys.toList()..sort();
-
-        return ListView.separated(
-          padding: const EdgeInsets.all(14),
-          itemCount: keys.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 10),
-          itemBuilder: (context, i) {
-            final cat   = keys[i];
-            final items = grouped[cat]!;
-            final availableCount =
-                items.where((e) => _b(e, 'available')).length;
-
-            return _SmoothCategoryCard(
-              key: ValueKey('cat_$cat'),
-              category: cat,
-              totalCount: items.length,
-              availableCount: availableCount,
-              children: items.map((item) {
-                final name      = _s(item, 'name');
-                final price     = _d(item, 'price');
-                final available = _b(item, 'available');
-                final isSpecial = _b(item, 'special', fallback: false);
-                return ListTile(
-                  dense: true,
-                  leading: Icon(
-                    isSpecial ? Icons.star : Icons.circle,
-                    color: isSpecial
-                        ? AppColors.gold
-                        : (available
-                            ? Colors.green
-                            : Colors.grey.shade400),
-                    size: 16,
-                  ),
-                  title: Text(name),
-                  subtitle: Text('₹${price.toStringAsFixed(2)}'),
-                  trailing: Text(
-                    available ? 'Available' : 'Unavailable',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: available ? Colors.green : Colors.red,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                );
-              }).toList(),
-            );
-          },
-        );
-      },
-    );
-  }
-
   // ═══════════════════════ TODAY'S SPECIALS TAB ═══════════════════════
   Widget _specialsTab(String slug) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -304,9 +221,8 @@ class _MenuOffersPageState extends State<MenuOffersPage>
           itemBuilder: (context, i) {
             final data     = docs[i].data();
             final id       = docs[i].id;
-            final name     = _s(data, 'name');
-            final price    = _d(data, 'price');
-            final category = _s(data, 'category');
+            final name  = _s(data, 'name');
+            final price = _d(data, 'price');
 
             return Card(
               elevation: 2,
@@ -324,8 +240,7 @@ class _MenuOffersPageState extends State<MenuOffersPage>
                 title: Text(name,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
                 subtitle: Text(
-                  '₹${price.toStringAsFixed(2)}'
-                  '${category.isNotEmpty ? '  •  $category' : ''}',
+                  '₹${price.toStringAsFixed(2)}',
                   style: TextStyle(color: Colors.grey.shade600),
                 ),
                 trailing: TextButton.icon(
@@ -462,9 +377,8 @@ class _MenuOffersPageState extends State<MenuOffersPage>
 
   // ═══════════════════════ ADD MENU ITEM ═══════════════════════
   Future<void> _showAddMenuDialog(String slug) async {
-    final nameCtrl     = TextEditingController();
-    final priceCtrl    = TextEditingController();
-    final categoryCtrl = TextEditingController();
+    final nameCtrl  = TextEditingController();
+    final priceCtrl = TextEditingController();
     bool isSpecial = false;
 
     await showDialog(
@@ -491,13 +405,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
                       const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(
                       labelText: 'Price', prefixText: '₹ '),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: categoryCtrl,
-                  textCapitalization: TextCapitalization.words,
-                  decoration:
-                      const InputDecoration(labelText: 'Category'),
                 ),
                 const SizedBox(height: 6),
                 SwitchListTile(
@@ -527,7 +434,6 @@ class _MenuOffersPageState extends State<MenuOffersPage>
                   'id': id,
                   'name': rawName,
                   'price': double.tryParse(priceCtrl.text.trim()) ?? 0.0,
-                  'category': categoryCtrl.text.trim(),
                   'available': true,
                   'special': isSpecial,
                   'createdAt': FieldValue.serverTimestamp(),
@@ -658,96 +564,3 @@ class _MenuOffersPageState extends State<MenuOffersPage>
   }
 }
 
-class _SmoothCategoryCard extends StatefulWidget {
-  final String category;
-  final int totalCount;
-  final int availableCount;
-  final List<Widget> children;
-
-  const _SmoothCategoryCard({
-    super.key,
-    required this.category,
-    required this.totalCount,
-    required this.availableCount,
-    required this.children,
-  });
-
-  @override
-  State<_SmoothCategoryCard> createState() => _SmoothCategoryCardState();
-}
-
-class _SmoothCategoryCardState extends State<_SmoothCategoryCard> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: AppColors.deepRed.withValues(alpha: 0.1),
-                    child: Text(
-                      '${widget.totalCount}',
-                      style: const TextStyle(
-                          color: AppColors.deepRed,
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(widget.category,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w700, fontSize: 15)),
-                        Text(
-                          '${widget.availableCount} of ${widget.totalCount} available',
-                          style: TextStyle(
-                              color: Colors.grey.shade600, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                  AnimatedRotation(
-                    turns: _expanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic,
-                    child: const Icon(Icons.expand_more),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          ClipRect(
-            child: AnimatedSize(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-              alignment: Alignment.topCenter,
-              child: _expanded
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Divider(height: 1),
-                        ...widget.children,
-                      ],
-                    )
-                  : const SizedBox.shrink(),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

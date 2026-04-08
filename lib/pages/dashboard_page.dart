@@ -420,7 +420,10 @@ class _DashboardPageState extends State<DashboardPage> {
                   return ListTile(
                     leading: const Icon(Icons.schedule, color: AppColors.deepRed),
                     title: Text("${r.customerName} • ${r.guests} guests"),
-                    subtitle: Text(_fmtDT(r.datetime)),
+                    subtitle: Text([
+                      _fmtDT(r.datetime),
+                      if ((r.tableName ?? '').isNotEmpty) r.tableName!,
+                    ].join('  •  ')),
                     trailing: (r.phone != null && r.phone!.trim().isNotEmpty)
                         ? IconButton(
                       tooltip: "Call",
@@ -610,6 +613,17 @@ class _RequestCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text("$dateStr • $timeStr"),
+            if ((request.tableName ?? "").isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.table_bar, size: 14, color: Colors.black54),
+                    const SizedBox(width: 4),
+                    Text("Table: ${request.tableName}"),
+                  ],
+                ),
+              ),
             if ((request.phone ?? "").isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
